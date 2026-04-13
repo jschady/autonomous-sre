@@ -1,0 +1,27 @@
+.env
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+.coverage
+htmlcov/
+# Added by code-review-graph
+.code-review-graph/
+.env.example
+GEMINI.md
+AGENTS.md
+CLAUDE.md
+OPENAI.md
+.claude/
+.cursorrules/
+.windsurfrules/
+.opencode.json
+.mcp.json
+.pytest_cache/
