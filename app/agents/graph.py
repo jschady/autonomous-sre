@@ -1,8 +1,12 @@
 """LangGraph agent graph for the Autonomous SRE system.
 
 Defines the stateful workflow:
-  triage → processor → researcher → human_gate → action → verification
-  with conditional routing for escalation, RBAC blocking, and retries.
+  triage → router → processor → researcher → human_gate → action → verification
+  with conditional routing for:
+    - escalation / failure after triage
+    - semantic cache hits (router → human_gate, skipping processor + researcher)
+    - RBAC blocking after action
+    - retries after failed verification
 
 Checkpointing:
   - Uses PostgresSaver when POSTGRES_DSN is set (Phase 2).
@@ -22,6 +26,7 @@ from app.nodes.action import action_node
 from app.nodes.human_gate import human_gate_node
 from app.nodes.processor import processor_node
 from app.nodes.researcher import research_node
+from app.nodes.router import router_node
 from app.nodes.triage import triage_node
 from app.nodes.verification import verification_node
 
@@ -46,11 +51,22 @@ async def escalate_node(state: SREState) -> dict:
 # ---------------------------------------------------------------------------
 
 def route_after_triage(state: SREState) -> str:
-    """Route to processor if triage succeeded, otherwise end (escalated)."""
+    """Route to router if triage succeeded, otherwise end (escalated/failed)."""
     if state.get("status") == "escalated":
         return END
     if state.get("status") == "failed":
         return END
+    return "router"
+
+
+def route_after_router(state: SREState) -> str:
+    """Route based on semantic cache result.
+
+    - cache_hit=True  → human_gate (skip processor + researcher)
+    - cache_hit=False → processor  (full analysis path)
+    """
+    if state.get("cache_hit"):
+        return "human_gate"
     return "processor"
 
 
@@ -119,6 +135,7 @@ def build_graph() -> CompiledStateGraph:
 
     # Register nodes
     workflow.add_node("triage", triage_node)
+    workflow.add_node("router", router_node)
     workflow.add_node("processor", processor_node)
     workflow.add_node("researcher", research_node)
     workflow.add_node("human_gate", human_gate_node)
@@ -129,18 +146,30 @@ def build_graph() -> CompiledStateGraph:
     # Entry point
     workflow.set_entry_point("triage")
 
-    # Edges
+    # triage → router (or END on failure)
     workflow.add_conditional_edges(
         "triage",
         route_after_triage,
         {
-            "processor": "processor",
+            "router": "router",
             END: END,
         },
     )
+
+    # router → processor (full path) or human_gate (cache hit)
+    workflow.add_conditional_edges(
+        "router",
+        route_after_router,
+        {
+            "processor": "processor",
+            "human_gate": "human_gate",
+        },
+    )
+
     workflow.add_edge("processor", "researcher")
     workflow.add_edge("researcher", "human_gate")
     workflow.add_edge("human_gate", "action")
+
     workflow.add_conditional_edges(
         "action",
         route_after_action,

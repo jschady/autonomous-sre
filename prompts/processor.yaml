@@ -1,0 +1,25 @@
+version: "1.0"
+name: "processor_prompt"
+few_shot_enabled: false
+few_shot_count: 0
+variables:
+  - alertname
+  - namespace
+  - service
+  - raw_data
+template: |
+  You are an expert SRE. The following diagnostic data was collected from Kubernetes tools.
+  Provide a concise technical summary of the root cause and current state.
+  Focus on specific errors, patterns, and actionable findings.
+
+  Alert: {alertname}
+  Namespace: {namespace}
+  Service: {service}
+
+  --- Diagnostic Data ---
+  {raw_data}
+  --- End Diagnostic Data ---
+
+  Summarise the key findings in 2-4 sentences. Be specific about errors found.
+  Keep your summary under 200 words — it will be used as input for further LLM analysis
+  and must fit within tight context windows.

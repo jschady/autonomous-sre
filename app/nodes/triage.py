@@ -1,6 +1,9 @@
-"""Triage node — classifies alert severity and selects diagnostic tools.
+"""Triage node — classifies alert severity, selects diagnostic tools, and scores task complexity.
 
-Receives raw alert payload + metadata, returns severity, tools_to_run, triage_summary.
+Receives raw alert payload + metadata, returns severity, tools_to_run,
+triage_summary, and task_complexity (used by router for LLM selection).
+
+Triage always uses Claude (it runs before the router sets llm_provider).
 """
 from __future__ import annotations
 
@@ -15,43 +18,28 @@ from app.agents.state import SREState
 from app.config import get_settings
 from app.tools import ALL_TOOLS, TOOL_REGISTRY
 from app.utils.llm_cost import accumulate_cost, extract_usage
-
-_TRIAGE_PROMPT = """\
-You are an expert SRE. Analyze the following Kubernetes alert and determine:
-1. Severity: "critical", "warning", or "unknown"
-2. Which diagnostic tools to run (choose from the available tools)
-3. A concise triage summary
-
-Alert: {alertname}
-Status: {status}
-Summary: {summary}
-Metadata: region={region}, env={env}, namespace={namespace}, cluster={cluster_id}
-
-Available tools: {tool_names}
-
-Respond with ONLY valid JSON in this exact format:
-{{"severity": "<critical|warning|unknown>", "tools_to_run": ["tool1", "tool2"], "triage_summary": "<summary>"}}
-
-If the alert is unrecognizable or you cannot determine any remediation, set severity to "unknown" and tools_to_run to [].
-"""
+from app.utils.prompt_loader import load_prompt, render_prompt
 
 
 @traceable(name="triage_node", metadata={"phase": "triage"})
 async def triage_node(state: SREState) -> dict:
-    """Classify the alert and select tools for investigation."""
+    """Classify the alert, select tools, and score task complexity."""
     settings = get_settings()
     payload = state["alert_payload"]
     metadata = state["metadata"]
     annotations = payload.get("annotations", {})
 
     try:
+        # Triage always uses Claude — runs before the router decides the provider
         llm = ChatAnthropic(
             model=settings.triage_model,
             api_key=settings.anthropic_api_key,
         )
         llm.bind_tools(ALL_TOOLS)
 
-        prompt = _TRIAGE_PROMPT.format(
+        prompt_config = load_prompt("triage", settings.prompt_dir)
+        prompt = render_prompt(
+            prompt_config,
             alertname=payload.get("alertname", "unknown"),
             status=payload.get("status", "firing"),
             summary=annotations.get("summary", annotations.get("description", "")),
@@ -68,6 +56,7 @@ async def triage_node(state: SREState) -> dict:
         severity = parsed.get("severity", "unknown")
         tools_to_run = _validate_tools(parsed.get("tools_to_run", []))
         triage_summary = parsed.get("triage_summary", "")
+        task_complexity = _validate_complexity(parsed.get("task_complexity", "moderate"))
 
         status = "escalated" if severity == "unknown" and not tools_to_run else state["status"]
 
@@ -77,6 +66,7 @@ async def triage_node(state: SREState) -> dict:
         reasoning_entry = (
             f"[triage] severity={severity} | "
             f"tools={tools_to_run} | "
+            f"complexity={task_complexity} | "
             f"summary={triage_summary!r} | "
             f"tokens={usage['total_tokens']} cost=${usage['cost_usd']:.6f}"
         )
@@ -85,6 +75,7 @@ async def triage_node(state: SREState) -> dict:
             "severity": severity,
             "tools_to_run": tools_to_run,
             "triage_summary": triage_summary,
+            "task_complexity": task_complexity,
             "status": status,
             "token_usage": updated_token_usage,
             "cost_estimate_usd": accumulate_cost(updated_token_usage),
@@ -103,12 +94,10 @@ async def triage_node(state: SREState) -> dict:
 def _parse_triage_response(content: str) -> dict:
     """Extract JSON from LLM response, handling markdown code fences."""
     text = content.strip()
-    # Strip markdown code blocks
     text = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("```").strip()
     try:
         return json.loads(text)
     except (json.JSONDecodeError, TypeError):
-        # Attempt to extract JSON object
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             try:
@@ -121,3 +110,9 @@ def _parse_triage_response(content: str) -> dict:
 def _validate_tools(tool_names: list) -> list[str]:
     """Filter tool names to only include registered tools."""
     return [name for name in tool_names if name in TOOL_REGISTRY]
+
+
+def _validate_complexity(value: str) -> str:
+    """Ensure complexity is one of the valid values; default to 'moderate'."""
+    valid = {"simple", "moderate", "complex"}
+    return value if value in valid else "moderate"

@@ -205,7 +205,13 @@ class TestProcessorNode:
 
     @pytest.mark.asyncio
     async def test_processor_calls_tools_from_state(self, state_with_tools):
-        result = await processor_node(state_with_tools)
+        mock_llm = _make_mock_llm_text_only("Pod crash summary.")
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )):
+            result = await processor_node(state_with_tools)
         assert isinstance(result["raw_logs"], str)
         assert len(result["raw_logs"]) > 0
 
@@ -215,7 +221,11 @@ class TestProcessorNode:
             "The pod is repeatedly crashing due to a database connection failure. "
             "Error: connection refused on port 5432."
         )
-        with patch("app.nodes.processor.ChatAnthropic", return_value=mock_llm):
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )):
             result = await processor_node(state_with_tools)
 
         assert isinstance(result["error_summary"], str)
@@ -223,21 +233,35 @@ class TestProcessorNode:
 
     @pytest.mark.asyncio
     async def test_processor_concatenates_raw_logs(self, state_with_tools):
-        result = await processor_node(state_with_tools)
-        # raw_logs should contain output from tools
+        mock_llm = _make_mock_llm_text_only("Pod crash loop summary.")
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )):
+            result = await processor_node(state_with_tools)
         assert "checkout" in result["raw_logs"].lower() or len(result["raw_logs"]) > 50
 
     @pytest.mark.asyncio
     async def test_processor_uses_metadata_namespace(self, state_with_tools):
-        result = await processor_node(state_with_tools)
-        # The namespace from metadata should appear in the raw_logs
+        mock_llm = _make_mock_llm_text_only("Summary.")
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )):
+            result = await processor_node(state_with_tools)
         assert "checkout" in result["raw_logs"]
 
     @pytest.mark.asyncio
     async def test_processor_handles_empty_tools_list(self, crashloop_state):
         state = {**crashloop_state, "tools_to_run": []}
         mock_llm = _make_mock_llm_text_only("No tools available to run.")
-        with patch("app.nodes.processor.ChatAnthropic", return_value=mock_llm):
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )):
             result = await processor_node(state)
 
         assert isinstance(result, dict)
@@ -247,7 +271,11 @@ class TestProcessorNode:
     async def test_processor_handles_llm_error_gracefully(self, state_with_tools):
         mock_llm = MagicMock()
         mock_llm.invoke.side_effect = Exception("LLM API error")
-        with patch("app.nodes.processor.ChatAnthropic", return_value=mock_llm):
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )):
             result = await processor_node(state_with_tools)
 
         assert result["status"] == "failed"
@@ -276,7 +304,12 @@ class TestResearcherNode:
             "Based on the CrashLoopBackOff pattern, recommended action: restart_service. "
             "Apply rolling restart to restore pod."
         )
-        with patch("app.nodes.researcher.ChatAnthropic", return_value=mock_llm):
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )), \
+             patch("app.utils.incident_store.fetch_similar_incidents", return_value=[]):
             result = await research_node(state_with_error_summary)
 
         assert isinstance(result["sop_matches"], list)
@@ -288,7 +321,12 @@ class TestResearcherNode:
             "Recommended action: restart_service. "
             "Execute rolling restart for the checkout-api deployment."
         )
-        with patch("app.nodes.researcher.ChatAnthropic", return_value=mock_llm):
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )), \
+             patch("app.utils.incident_store.fetch_similar_incidents", return_value=[]):
             result = await research_node(state_with_error_summary)
 
         assert isinstance(result["recommended_action"], str)
@@ -304,7 +342,12 @@ class TestResearcherNode:
         mock_llm = _make_mock_llm_text_only(
             "No matching SOP found. Manual investigation recommended."
         )
-        with patch("app.nodes.researcher.ChatAnthropic", return_value=mock_llm):
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )), \
+             patch("app.utils.incident_store.fetch_similar_incidents", return_value=[]):
             result = await research_node(state)
 
         assert "manual investigation" in result["recommended_action"].lower()
@@ -313,7 +356,12 @@ class TestResearcherNode:
     async def test_researcher_returns_immutable_update(self, state_with_error_summary):
         mock_llm = _make_mock_llm_text_only("Restart the service.")
         original_sop_matches = state_with_error_summary["sop_matches"][:]
-        with patch("app.nodes.researcher.ChatAnthropic", return_value=mock_llm):
+        with patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )), \
+             patch("app.utils.incident_store.fetch_similar_incidents", return_value=[]):
             result = await research_node(state_with_error_summary)
 
         assert isinstance(result, dict)

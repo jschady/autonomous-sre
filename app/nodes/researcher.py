@@ -1,49 +1,51 @@
 """Researcher node — searches SOPs and derives a recommended action.
 
-Uses the error_summary to search the knowledge base, then asks the LLM
-to synthesise a specific recommended_action from matching SOPs.
+Phase 3 changes:
+  - Uses LLM factory: respects state["llm_provider"] (Claude or local Llama 8B).
+  - Injects up to 3 few-shot examples from resolved_incidents Postgres table.
+  - Examples are formatted as narrative "stories" (not JSON) for Llama performance.
+  - Uses YAML prompt file for versioned, externalized prompt management.
 """
 from __future__ import annotations
 
-from langchain_anthropic import ChatAnthropic
+import logging
+import os
+
 from langchain_core.messages import HumanMessage
 from langsmith import traceable
 
 from app.agents.state import SREState
 from app.config import get_settings
-from app.tools.db_tools import query_knowledge_base
+from app.utils.incident_store import fetch_similar_incidents
 from app.utils.llm_cost import accumulate_cost, extract_usage
+from app.utils.llm_factory import invoke_with_fallback
+from app.utils.prompt_loader import build_few_shot_section, load_prompt, render_prompt
 from data.sops.mock_sops import search_sops
 
-_RESEARCH_PROMPT = """\
-You are an expert SRE. Based on the error summary and matching SOPs below,
-determine the single best remediation action to take.
+logger = logging.getLogger(__name__)
 
-Alert: {alertname}
-Error Summary: {error_summary}
 
-Matching SOPs:
-{sop_context}
-
-State the recommended action clearly in 1-2 sentences.
-If no SOPs match, recommend "Manual investigation by on-call engineer".
-"""
+@traceable(name="search_knowledge_base", run_type="tool", metadata={"phase": "research"})
+def _search_knowledge_base(query: str) -> list[dict]:
+    """Traceable wrapper around search_sops so LangSmith captures the SOP lookup."""
+    return search_sops(query)
 
 
 @traceable(name="research_node", metadata={"phase": "research"})
 async def research_node(state: SREState) -> dict:
-    """Search SOPs and produce a recommended_action."""
+    """Search SOPs, inject few-shot examples, and produce a recommended_action."""
     settings = get_settings()
     payload = state["alert_payload"]
     error_summary = state.get("error_summary", "")
     triage_summary = state.get("triage_summary", "")
+    llm_provider = state.get("llm_provider", "claude")
 
     # Build search query from error context
     alertname = payload.get("alertname", "")
     search_query = f"{alertname} {error_summary} {triage_summary}".strip()
 
     # Search SOPs
-    sop_matches = search_sops(search_query)
+    sop_matches = _search_knowledge_base(search_query)
 
     if sop_matches:
         sop_context = "\n\n".join(
@@ -53,20 +55,36 @@ async def research_node(state: SREState) -> dict:
     else:
         sop_context = "No matching SOPs found."
 
+    # Fetch few-shot examples from resolved incidents
+    few_shot_section = ""
+    prompt_config = load_prompt("researcher", settings.prompt_dir)
+    if prompt_config.few_shot_enabled:
+        dsn = settings.postgres_dsn or os.environ.get("POSTGRES_DSN", "")
+        try:
+            similar_incidents = await fetch_similar_incidents(
+                dsn=dsn,
+                error_summary=error_summary or triage_summary,
+                limit=prompt_config.few_shot_count,
+            )
+            few_shot_section = build_few_shot_section(similar_incidents)
+        except Exception as exc:
+            logger.warning("Failed to fetch few-shot examples (non-critical): %s", exc)
+
     try:
-        llm = ChatAnthropic(
-            model=settings.processor_model,
-            api_key=settings.anthropic_api_key,
-        )
-        prompt = _RESEARCH_PROMPT.format(
+        prompt = render_prompt(
+            prompt_config,
             alertname=alertname,
             error_summary=error_summary or triage_summary,
             sop_context=sop_context,
+            few_shot_section=few_shot_section,
         )
-        response = llm.invoke([HumanMessage(content=prompt)])
+        response = invoke_with_fallback(
+            provider=llm_provider,
+            messages=[HumanMessage(content=prompt)],
+            model_override=settings.processor_model,
+        )
         recommended_action = response.content.strip()
 
-        # Fallback if LLM returns empty content
         if not recommended_action:
             recommended_action = (
                 "Manual investigation recommended — no clear remediation identified."
@@ -81,12 +99,24 @@ async def research_node(state: SREState) -> dict:
             "current_node": "researcher",
         }
 
-    usage = extract_usage("researcher", settings.processor_model, response)
+    # Determine effective model for cost tracking.
+    # If the local LLM was unreachable, invoke_with_fallback silently used Claude,
+    # so we check the response metadata to pick the right model label.
+    response_model = getattr(response, "response_metadata", {}).get("model_id", "")
+    effective_model = (
+        settings.local_model_name
+        if llm_provider == "local" and settings.local_model_enabled and not response_model
+        else settings.processor_model
+    )
+
+    usage = extract_usage("researcher", effective_model, response)
     updated_token_usage = list(state.get("token_usage", [])) + [dict(usage)]
 
     sop_titles = [s["title"] for s in sop_matches]
     reasoning_entry = (
-        f"[researcher] sops_matched={sop_titles} | "
+        f"[researcher] provider={llm_provider} | "
+        f"sops_matched={sop_titles} | "
+        f"few_shot={'yes' if few_shot_section else 'no'} | "
         f"recommended_action={recommended_action!r} | "
         f"tokens={usage['total_tokens']} cost=${usage['cost_usd']:.6f}"
     )

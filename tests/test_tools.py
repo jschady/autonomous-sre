@@ -191,7 +191,7 @@ class TestQueryKnowledgeBase:
 class TestToolRegistry:
     def test_all_tools_is_list(self):
         assert isinstance(ALL_TOOLS, list)
-        assert len(ALL_TOOLS) == 6
+        assert len(ALL_TOOLS) == 5
 
     def test_tool_registry_is_dict(self):
         assert isinstance(TOOL_REGISTRY, dict)
@@ -213,7 +213,6 @@ class TestToolRegistry:
             "get_system_metrics",
             "restart_service",
             "execute_rollback",
-            "query_knowledge_base",
         }
         assert expected.issubset(set(TOOL_REGISTRY.keys()))
 

@@ -1,11 +1,16 @@
 """Processor node — executes diagnostic tools and summarises findings.
 
 Takes tools_to_run from state, invokes each tool, aggregates raw output,
-then uses LLM to produce a concise error_summary.
+then uses an LLM to produce a concise error_summary.
+
+Key Phase 3 changes:
+  - Uses Haiku (via settings.processor_model) to summarize logs before they
+    reach the researcher. This compresses 10MB log files into ~200-word summaries
+    that fit comfortably in Llama 8B's context window.
+  - Uses LLM factory (respects state["llm_provider"] set by router node).
 """
 from __future__ import annotations
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langsmith import traceable
 
@@ -13,27 +18,22 @@ from app.agents.state import SREState
 from app.config import get_settings
 from app.tools import TOOL_REGISTRY
 from app.utils.llm_cost import accumulate_cost, extract_usage
+from app.utils.llm_factory import invoke_with_fallback
+from app.utils.prompt_loader import load_prompt, render_prompt
 
-_SUMMARISE_PROMPT = """\
-You are an expert SRE. The following diagnostic data was collected from Kubernetes tools.
-Provide a concise technical summary of the root cause and current state.
-Focus on specific errors, patterns, and actionable findings.
-
-Alert: {alertname}
-Namespace: {namespace}
-Service: {service}
-
---- Diagnostic Data ---
-{raw_data}
---- End Diagnostic Data ---
-
-Summarise the key findings in 2-4 sentences. Be specific about errors found.
-"""
+# Character budget for raw_logs passed to the summary LLM.
+# Prevents OOM / context overflow when logs are very large.
+_MAX_RAW_LOG_CHARS = 50_000
 
 
 @traceable(name="processor_node", metadata={"phase": "processing"})
 async def processor_node(state: SREState) -> dict:
-    """Run diagnostic tools and produce an error summary."""
+    """Run diagnostic tools and produce a compact error summary.
+
+    Always uses Haiku (processor_model) for log summarization regardless of
+    the router's llm_provider decision — Haiku is extremely cost-effective for
+    this compression task and produces output sized for Llama 8B's context.
+    """
     settings = get_settings()
     metadata = state["metadata"]
     payload = state["alert_payload"]
@@ -57,18 +57,29 @@ async def processor_node(state: SREState) -> dict:
 
     raw_logs = "\n\n".join(raw_parts) if raw_parts else "No diagnostic data collected."
 
+    # Truncate before sending to LLM to avoid context overflow
+    raw_data_for_llm = raw_logs[:_MAX_RAW_LOG_CHARS]
+    if len(raw_logs) > _MAX_RAW_LOG_CHARS:
+        raw_data_for_llm += "\n[... truncated for context window ...]"
+
     try:
-        llm = ChatAnthropic(
-            model=settings.processor_model,
-            api_key=settings.anthropic_api_key,
-        )
-        prompt = _SUMMARISE_PROMPT.format(
+        # Processor ALWAYS uses Haiku for log summarization.
+        # This is a deliberate design choice: Haiku compresses large diagnostic
+        # data into a tight summary that fits in Llama 8B's 32K context window.
+        # The researcher node then uses the router's llm_provider selection.
+        prompt_config = load_prompt("processor", settings.prompt_dir)
+        prompt = render_prompt(
+            prompt_config,
             alertname=payload.get("alertname", "unknown"),
             namespace=namespace,
             service=service,
-            raw_data=raw_logs,
+            raw_data=raw_data_for_llm,
         )
-        response = llm.invoke([HumanMessage(content=prompt)])
+        response = invoke_with_fallback(
+            provider="claude",
+            messages=[HumanMessage(content=prompt)],
+            model_override=settings.processor_model,
+        )
         error_summary = response.content.strip()
 
     except Exception as exc:
@@ -106,7 +117,4 @@ def _invoke_tool(tool_name: str, tool, namespace: str, service: str, pod: str) -
         return tool.invoke({"pod_id": pod, "container": service})
     if tool_name == "get_system_metrics":
         return tool.invoke({"service_name": service})
-    if tool_name == "query_knowledge_base":
-        return tool.invoke({"query": service})
-    # For action tools (restart/rollback), just describe what would be done
     return tool.invoke({"service_id": service}) if tool_name == "restart_service" else str(tool_name)

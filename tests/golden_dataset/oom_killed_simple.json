@@ -1,0 +1,30 @@
+{
+  "id": "golden-001",
+  "description": "Simple OOMKilled alert — should route to local model",
+  "expected_complexity": "simple",
+  "expected_provider": "local",
+  "input": {
+    "alertname": "OOMKilled",
+    "status": "firing",
+    "labels": {
+      "region": "us-east-1",
+      "env": "prod",
+      "cluster_id": "k8s-prod-1",
+      "namespace": "checkout",
+      "service": "checkout-api",
+      "pod": "checkout-api-7d9f8b-xkj2p"
+    },
+    "annotations": {
+      "summary": "Container checkout-api was OOMKilled",
+      "description": "Container has been OOMKilled 3 times in the last 10 minutes"
+    }
+  },
+  "expected_severity": "critical",
+  "acceptable_actions": [
+    "Increase memory limit",
+    "increase memory",
+    "memory limit",
+    "kubectl set resources",
+    "resource limit"
+  ]
+}

@@ -27,6 +27,19 @@ def reset_mock_state():
     yield
 
 
+@pytest.fixture(autouse=True)
+def reset_main_state():
+    """Reset module-level state in app.main between tests."""
+    import app.main as main_module
+    main_module._ALERT_STATES_MEMORY.clear()
+    main_module._ALERT_CONFIGS_MEMORY.clear()
+    main_module._redis_client = None
+    yield
+    main_module._ALERT_STATES_MEMORY.clear()
+    main_module._ALERT_CONFIGS_MEMORY.clear()
+    main_module._redis_client = None
+
+
 @pytest.fixture
 def base_state():
     return create_initial_state({
@@ -182,7 +195,10 @@ class TestMainCoverage:
         ALERT_CONFIGS[alert_id] = config
         ALERT_STATES[alert_id] = state
 
-        with patch("app.main._graph") as mock_graph:
+        # Patch _get_redis to return None so state writes go to in-memory store
+        # (Redis may be running in the dev environment, which bypasses _ALERT_STATES_MEMORY)
+        with patch("app.main._graph") as mock_graph, \
+             patch("app.main._get_redis", return_value=None):
             mock_graph.ainvoke = AsyncMock(side_effect=RuntimeError("unexpected error"))
             await _run_graph(alert_id, state)
 

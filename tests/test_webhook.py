@@ -180,7 +180,7 @@ class TestHappyPathE2E:
 
         triage_response = (
             '{"severity": "critical", "tools_to_run": ["get_cluster_events"], '
-            '"triage_summary": "CrashLoopBackOff detected"}'
+            '"triage_summary": "CrashLoopBackOff detected", "task_complexity": "moderate"}'
         )
         processor_response = "Pod crash looping due to DB failure."
         researcher_response = "Restart the service to resolve CrashLoopBackOff."
@@ -190,8 +190,15 @@ class TestHappyPathE2E:
         )
 
         with patch("app.nodes.triage.ChatAnthropic", return_value=mock_llm), \
-             patch("app.nodes.processor.ChatAnthropic", return_value=mock_llm), \
-             patch("app.nodes.researcher.ChatAnthropic", return_value=mock_llm):
+             patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )), \
+             patch("app.nodes.router.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, semantic_cache_enabled=False,
+             )), \
+             patch("app.utils.incident_store.fetch_similar_incidents", return_value=[]):
 
             post_resp = await test_client.post("/webhook", json=sample_alert)
             assert post_resp.status_code == 202
@@ -222,7 +229,7 @@ class TestHappyPathE2E:
         """POST webhook → reject → status should eventually be escalated."""
         triage_response = (
             '{"severity": "critical", "tools_to_run": ["get_cluster_events"], '
-            '"triage_summary": "CrashLoopBackOff detected"}'
+            '"triage_summary": "CrashLoopBackOff detected", "task_complexity": "moderate"}'
         )
         processor_response = "Pod crash looping."
         researcher_response = "Restart the service."
@@ -231,8 +238,15 @@ class TestHappyPathE2E:
         )
 
         with patch("app.nodes.triage.ChatAnthropic", return_value=mock_llm), \
-             patch("app.nodes.processor.ChatAnthropic", return_value=mock_llm), \
-             patch("app.nodes.researcher.ChatAnthropic", return_value=mock_llm):
+             patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.utils.llm_factory.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, runpod_base_url="",
+                 triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+             )), \
+             patch("app.nodes.router.get_settings", return_value=MagicMock(
+                 local_model_enabled=False, semantic_cache_enabled=False,
+             )), \
+             patch("app.utils.incident_store.fetch_similar_incidents", return_value=[]):
 
             post_resp = await test_client.post("/webhook", json=sample_alert)
             alert_id = post_resp.json()["alert_id"]

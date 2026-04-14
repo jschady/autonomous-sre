@@ -1,0 +1,31 @@
+{
+  "id": "golden-003",
+  "description": "Multi-service cascading failure — complex, route to Claude",
+  "expected_complexity": "complex",
+  "expected_provider": "claude",
+  "input": {
+    "alertname": "CascadingServiceFailure",
+    "status": "firing",
+    "labels": {
+      "region": "us-east-1",
+      "env": "prod",
+      "cluster_id": "k8s-prod-1",
+      "namespace": "core",
+      "service": "api-gateway",
+      "pod": "api-gateway-prod-xyz"
+    },
+    "annotations": {
+      "summary": "Multiple downstream services failing — potential cascading failure",
+      "description": "api-gateway, auth-service, and payments-api all reporting 5xx errors. Database connection pool exhausted. Circuit breakers open on 4 services."
+    }
+  },
+  "expected_severity": "critical",
+  "acceptable_actions": [
+    "rollback",
+    "manual investigation",
+    "escalate",
+    "circuit breaker",
+    "database",
+    "on-call engineer"
+  ]
+}

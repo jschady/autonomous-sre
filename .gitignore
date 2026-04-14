@@ -20,8 +20,9 @@ AGENTS.md
 CLAUDE.md
 OPENAI.md
 .claude/
-.cursorrules/
-.windsurfrules/
+.cursorrules
+.windsurfrules
 .opencode.json
 .mcp.json
 .pytest_cache/
+Pulumi.dev.yaml

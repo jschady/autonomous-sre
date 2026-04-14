@@ -1,0 +1,22 @@
+version: "1.0"
+name: "researcher_prompt"
+few_shot_enabled: true
+few_shot_count: 3
+variables:
+  - alertname
+  - error_summary
+  - sop_context
+template: |
+  You are an expert SRE. Based on the error summary and matching SOPs below,
+  determine the single best remediation action to take.
+
+  Alert: {alertname}
+  Error Summary: {error_summary}
+
+  Matching SOPs:
+  {sop_context}
+
+  {few_shot_section}
+
+  State the recommended action clearly in 1-2 sentences.
+  If no SOPs match, recommend "Manual investigation by on-call engineer".

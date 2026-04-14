@@ -78,7 +78,8 @@ class TestGraphBuilds:
     def test_graph_has_expected_nodes(self):
         graph = build_graph()
         node_names = set(graph.get_graph().nodes.keys())
-        expected = {"triage", "processor", "researcher", "human_gate", "action", "verification", "escalate"}
+        # Phase 3: router node added between triage and processor
+        expected = {"triage", "router", "processor", "researcher", "human_gate", "action", "verification", "escalate"}
         assert expected.issubset(node_names)
 
     def test_graph_is_compiled(self):
@@ -99,7 +100,7 @@ class TestHappyPath:
 
         triage_response = (
             '{"severity": "critical", "tools_to_run": ["get_cluster_events"], '
-            '"triage_summary": "CrashLoopBackOff detected"}'
+            '"triage_summary": "CrashLoopBackOff detected", "task_complexity": "moderate"}'
         )
         processor_response = "Pod is crash looping due to DB connection failure."
         researcher_response = "Restart the service to resolve the CrashLoopBackOff."
@@ -111,8 +112,16 @@ class TestHappyPath:
         config = {"configurable": {"thread_id": initial_state["alert_id"]}}
 
         with patch("app.nodes.triage.ChatAnthropic", return_value=mock_llm), \
-             patch("app.nodes.processor.ChatAnthropic", return_value=mock_llm), \
-             patch("app.nodes.researcher.ChatAnthropic", return_value=mock_llm):
+             patch("app.utils.llm_factory.get_settings") as mock_factory_settings, \
+             patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.nodes.router.get_settings") as mock_router_settings:
+            mock_factory_settings.return_value = MagicMock(
+                local_model_enabled=False, runpod_base_url="",
+                triage_model="claude-sonnet-4-6", anthropic_api_key="test",
+            )
+            mock_router_settings.return_value = MagicMock(
+                local_model_enabled=False, semantic_cache_enabled=False,
+            )
 
             # Run up to human gate (will interrupt)
             from langgraph.errors import GraphInterrupt
@@ -151,19 +160,17 @@ class TestMaxRetriesEscalation:
 
         triage_response = (
             '{"severity": "critical", "tools_to_run": ["get_cluster_events"], '
-            '"triage_summary": "CrashLoopBackOff detected"}'
+            '"triage_summary": "CrashLoopBackOff detected", "task_complexity": "moderate"}'
         )
         processor_response = "Crash loop due to DB connection failure."
         researcher_response = "Restart the service."
 
-        # Provide enough responses for multiple triage cycles (up to max_retries)
         responses = []
         for _ in range(10):
             responses.extend([triage_response, processor_response, researcher_response])
 
         mock_llm = _make_mock_llm(responses)
 
-        # Use max_retries=1 to speed up test
         payload = {**crashloop_payload, "labels": {**crashloop_payload["labels"]}}
         graph = build_graph()
         initial_state = create_initial_state(payload)
@@ -174,8 +181,11 @@ class TestMaxRetriesEscalation:
         from langgraph.types import Command
 
         with patch("app.nodes.triage.ChatAnthropic", return_value=mock_llm), \
-             patch("app.nodes.processor.ChatAnthropic", return_value=mock_llm), \
-             patch("app.nodes.researcher.ChatAnthropic", return_value=mock_llm):
+             patch("app.utils.llm_factory._build_claude_client", return_value=mock_llm), \
+             patch("app.nodes.router.get_settings") as mock_router_settings:
+            mock_router_settings.return_value = MagicMock(
+                local_model_enabled=False, semantic_cache_enabled=False,
+            )
 
             # Run until first interrupt
             try:
@@ -203,7 +213,7 @@ class TestUnknownAlertEscalation:
         # Triage returns unknown severity with empty tools
         triage_response = (
             '{"severity": "unknown", "tools_to_run": [], '
-            '"triage_summary": "Cannot determine issue — escalating"}'
+            '"triage_summary": "Cannot determine issue — escalating", "task_complexity": "moderate"}'
         )
         mock_llm = _make_mock_llm([triage_response])
 

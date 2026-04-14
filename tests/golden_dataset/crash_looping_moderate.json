@@ -1,0 +1,30 @@
+{
+  "id": "golden-002",
+  "description": "Pod crash looping — moderate complexity, route to local model",
+  "expected_complexity": "moderate",
+  "expected_provider": "local",
+  "input": {
+    "alertname": "PodCrashLooping",
+    "status": "firing",
+    "labels": {
+      "region": "us-east-1",
+      "env": "prod",
+      "cluster_id": "k8s-prod-1",
+      "namespace": "payments",
+      "service": "payments-api",
+      "pod": "payments-api-abc123-xyz"
+    },
+    "annotations": {
+      "summary": "Pod payments-api is crash looping",
+      "description": "Pod has restarted 8 times in the last 10 minutes"
+    }
+  },
+  "expected_severity": "critical",
+  "acceptable_actions": [
+    "restart",
+    "Restart pod",
+    "restart service",
+    "check logs",
+    "investigate startup"
+  ]
+}

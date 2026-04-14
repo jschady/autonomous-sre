@@ -17,6 +17,9 @@ _PRICE_PER_M: dict[str, dict[str, float]] = {
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
     "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
     "text-embedding-3-small": {"input": 0.02, "output": 0.00},
+    # Local / self-hosted models — compute-cost estimate, not API billing
+    "meta-llama/Llama-3.1-8B-Instruct": {"input": 0.10, "output": 0.10},
+    "llama": {"input": 0.10, "output": 0.10},
 }
 _DEFAULT_PRICE: dict[str, float] = {"input": 3.00, "output": 15.00}
 
@@ -76,3 +79,28 @@ def _compute_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 def accumulate_cost(existing: list[dict]) -> float:
     """Sum cost_usd across all NodeUsage entries."""
     return round(sum(entry.get("cost_usd", 0.0) for entry in existing), 8)
+
+
+def compute_cost_saved(
+    node_usage: list[dict],
+    reference_model: str = "claude-sonnet-4-6",
+) -> float:
+    """Compute savings vs running everything on the reference model.
+
+    Args:
+        node_usage:      List of NodeUsage dicts from state["token_usage"].
+        reference_model: Model to compare against (default: claude-sonnet-4-6).
+
+    Returns:
+        USD savings (positive = saved money, negative = spent more).
+    """
+    actual_cost = accumulate_cost(node_usage)
+    reference_cost = sum(
+        _compute_cost(
+            reference_model,
+            entry.get("input_tokens", 0),
+            entry.get("output_tokens", 0),
+        )
+        for entry in node_usage
+    )
+    return round(reference_cost - actual_cost, 8)

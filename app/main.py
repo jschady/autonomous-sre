@@ -19,10 +19,13 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 
+from app.config import get_settings as _get_settings
+_get_settings()  # export LANGCHAIN_* to os.environ before any LangChain import
+
 from app.agents.graph import build_graph
 from app.agents.state import SREState, create_initial_state
 from app.models import AlertStatusResponse, AlertWebhook, SlackInteraction
-from app.utils.cost_store import save_alert_cost
+from app.utils.cost_store import aggregate_from_states, get_cost_report, save_alert_cost
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +191,17 @@ async def get_alert_status(alert_id: str) -> AlertStatusResponse:
         token_usage=list(state.get("token_usage", [])),
         cost_estimate_usd=float(state.get("cost_estimate_usd", 0.0)),
     )
+
+
+@app.get("/cost-report")
+async def cost_report() -> dict:
+    """Return aggregated cost metrics: total spend, savings from routing, cache hit rate."""
+    dsn = os.environ.get("POSTGRES_DSN", "")
+    if dsn:
+        return await get_cost_report(dsn)
+    # No Postgres — aggregate from the in-memory state store
+    states = list(_ALERT_STATES_MEMORY.values())
+    return aggregate_from_states(states)
 
 
 @app.post("/slack/interactive")
