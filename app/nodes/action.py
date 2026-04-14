@@ -5,18 +5,12 @@ tool (restart_service or execute_rollback). If not approved, escalates.
 """
 from __future__ import annotations
 
-import re
-
 from langsmith import traceable
 
 from app.agents.state import SREState
 from app.tools import TOOL_REGISTRY
 
-# Map SOP recommended_tool values to action tool names
-_ACTION_TOOL_MAP = {
-    "restart_service": "restart_service",
-    "execute_rollback": "execute_rollback",
-}
+_VALID_TOOLS = frozenset({"restart_service", "execute_rollback"})
 
 
 @traceable(name="action_node", metadata={"phase": "action"})
@@ -38,6 +32,7 @@ async def action_node(state: SREState) -> dict:
 
     service = metadata.get("service", state["alert_payload"].get("alertname", "unknown"))
     deployment = metadata.get("service", service)
+    namespace = metadata.get("namespace", "default")
 
     # Determine which tool to call
     tool_name = _determine_action_tool(proposed_action, sop_matches)
@@ -54,11 +49,11 @@ async def action_node(state: SREState) -> dict:
     tool = TOOL_REGISTRY[tool_name]
     try:
         if tool_name == "restart_service":
-            result = tool.invoke({"service_id": service})
+            result = tool.invoke({"service_id": service, "namespace": namespace})
         elif tool_name == "execute_rollback":
-            result = tool.invoke({"deployment_name": deployment})
+            result = tool.invoke({"deployment_name": deployment, "namespace": namespace})
         else:
-            result = tool.invoke({"service_id": service})
+            result = tool.invoke({"service_id": service, "namespace": namespace})
 
         # Detect RBAC denial surfaced as a string prefix in the tool result
         rbac_blocked = isinstance(result, str) and result.startswith("[RBAC_DENIED]")
@@ -93,7 +88,7 @@ def _determine_action_tool(proposed_action: str, sop_matches: list[dict]) -> str
     # Fall back to SOP recommendation
     for sop in sop_matches:
         tool = sop.get("recommended_tool", "")
-        if tool in _ACTION_TOOL_MAP:
+        if tool in _VALID_TOOLS:
             return tool
 
     return "restart_service"

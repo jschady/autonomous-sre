@@ -14,10 +14,24 @@ from app.utils.llm_cost import NodeUsage, accumulate_cost, extract_usage, _compu
 
 def test_compute_cost_sonnet():
     # 1000 input + 500 output on claude-sonnet-4-6
-    # input: (1000 / 1_000_000) * 3.00 = 0.001 * 3.00 = 0.003
-    # output: (500 / 1_000_000) * 15.00 = 0.0005 * 15.00 = 0.0075
+    # input: (1000 / 1_000_000) * 3.00 = 0.003
+    # output: (500 / 1_000_000) * 15.00 = 0.0075
     cost = _compute_cost("claude-sonnet-4-6", 1000, 500)
     assert abs(cost - 0.0105) < 1e-9
+
+
+def test_compute_cost_sonnet_with_cache_tokens():
+    # cache_write: (200 / 1_000_000) * 3.75 = 0.00075
+    # cache_read:  (400 / 1_000_000) * 0.30 = 0.00012
+    cost = _compute_cost("claude-sonnet-4-6", 0, 0, cache_write_tokens=200, cache_read_tokens=400)
+    assert abs(cost - (0.00075 + 0.00012)) < 1e-9
+
+
+def test_compute_cost_haiku_with_cache_tokens():
+    # cache_write: (100 / 1_000_000) * 1.00 = 0.0001
+    # cache_read:  (300 / 1_000_000) * 0.08 = 0.000024
+    cost = _compute_cost("claude-haiku-4-5-20251001", 0, 0, cache_write_tokens=100, cache_read_tokens=300)
+    assert abs(cost - (0.0001 + 0.000024)) < 1e-9
 
 
 def test_compute_cost_haiku():
@@ -49,12 +63,20 @@ def test_compute_cost_zero_tokens():
 # extract_usage
 # ---------------------------------------------------------------------------
 
-def _make_response(input_tokens=100, output_tokens=50, total_tokens=150):
+def _make_response(
+    input_tokens=100,
+    output_tokens=50,
+    total_tokens=150,
+    cache_creation_input_tokens=0,
+    cache_read_input_tokens=0,
+):
     response = MagicMock()
     response.usage_metadata = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
+        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "cache_read_input_tokens": cache_read_input_tokens,
     }
     return response
 
@@ -68,7 +90,26 @@ def test_extract_usage_returns_node_usage():
     assert result["input_tokens"] == 200
     assert result["output_tokens"] == 100
     assert result["total_tokens"] == 300
+    assert result["cache_write_tokens"] == 0
+    assert result["cache_read_tokens"] == 0
     assert result["cost_usd"] > 0
+
+
+def test_extract_usage_with_cache_tokens():
+    response = _make_response(
+        input_tokens=100,
+        output_tokens=50,
+        total_tokens=450,
+        cache_creation_input_tokens=200,
+        cache_read_input_tokens=100,
+    )
+    result = extract_usage("triage", "claude-sonnet-4-6", response)
+
+    assert result["cache_write_tokens"] == 200
+    assert result["cache_read_tokens"] == 100
+    # Cost must be higher than without cache tokens
+    base = extract_usage("triage", "claude-sonnet-4-6", _make_response(100, 50, 150))
+    assert result["cost_usd"] > base["cost_usd"]
 
 
 def test_extract_usage_handles_missing_metadata():
@@ -87,6 +128,18 @@ def test_extract_usage_infers_total_from_input_output():
     response.usage_metadata = {"input_tokens": 80, "output_tokens": 20}
     result = extract_usage("researcher", "claude-haiku-4-5-20251001", response)
     assert result["total_tokens"] == 100
+
+
+def test_extract_usage_infers_total_including_cache_tokens():
+    response = MagicMock()
+    response.usage_metadata = {
+        "input_tokens": 80,
+        "output_tokens": 20,
+        "cache_creation_input_tokens": 50,
+        "cache_read_input_tokens": 30,
+    }
+    result = extract_usage("researcher", "claude-haiku-4-5-20251001", response)
+    assert result["total_tokens"] == 180
 
 
 def test_extract_usage_cost_rounded_to_8_decimals():

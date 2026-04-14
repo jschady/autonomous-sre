@@ -22,14 +22,6 @@ from langchain_core.tools import BaseTool
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(autouse=True)
-def reset_mock_state():
-    """Reset module-level mock state before each test."""
-    EXECUTED_ACTIONS.clear()
-    k8s_tools.MOCK_HEALTHY = False
-    yield
-
-
 # ---------------------------------------------------------------------------
 # get_cluster_events
 # ---------------------------------------------------------------------------

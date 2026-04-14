@@ -16,7 +16,7 @@ from langsmith import traceable
 
 from app.agents.state import SREState
 from app.config import get_settings
-from app.tools import ALL_TOOLS, TOOL_REGISTRY
+from app.tools import TOOL_REGISTRY
 from app.utils.llm_cost import accumulate_cost, extract_usage
 from app.utils.prompt_loader import load_prompt, render_prompt
 
@@ -35,7 +35,6 @@ async def triage_node(state: SREState) -> dict:
             model=settings.triage_model,
             api_key=settings.anthropic_api_key,
         )
-        llm.bind_tools(ALL_TOOLS)
 
         prompt_config = load_prompt("triage", settings.prompt_dir)
         prompt = render_prompt(

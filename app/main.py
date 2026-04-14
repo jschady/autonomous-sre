@@ -25,7 +25,6 @@ _get_settings()  # export LANGCHAIN_* to os.environ before any LangChain import
 from app.agents.graph import build_graph
 from app.agents.state import SREState, create_initial_state
 from app.models import AlertStatusResponse, AlertWebhook, SlackInteraction
-from app.utils.cost_store import aggregate_from_states, get_cost_report, save_alert_cost
 
 logger = logging.getLogger(__name__)
 
@@ -103,25 +102,7 @@ async def _state_get(alert_id: str) -> SREState | None:
     return _ALERT_STATES_MEMORY.get(alert_id)
 
 
-# Expose ALERT_STATES as a proxy for backward-compat in tests
-class _AlertStatesProxy:
-    """Synchronous dict-like proxy for backward-compat with Phase 1 tests."""
-
-    def get(self, alert_id: str, default=None):  # noqa: ANN001
-        state = _ALERT_STATES_MEMORY.get(alert_id, default)
-        return state
-
-    def __setitem__(self, alert_id: str, value: SREState) -> None:
-        _ALERT_STATES_MEMORY[alert_id] = value
-
-    def __getitem__(self, alert_id: str) -> SREState:
-        return _ALERT_STATES_MEMORY[alert_id]
-
-    def __contains__(self, alert_id: str) -> bool:
-        return alert_id in _ALERT_STATES_MEMORY
-
-
-ALERT_STATES = _AlertStatesProxy()
+ALERT_STATES = _ALERT_STATES_MEMORY
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +116,7 @@ async def _run_graph(alert_id: str, initial_state: SREState) -> None:
         from langgraph.errors import GraphInterrupt
         result = await _graph.ainvoke(initial_state, config=config)
         await _state_set(alert_id, result)
-        await save_alert_cost(os.environ.get("POSTGRES_DSN", ""), result)
+
     except GraphInterrupt:
         # Graph paused at human_gate — snapshot current state from checkpointer
         snapshot = await _graph.aget_state(config)
@@ -191,17 +172,6 @@ async def get_alert_status(alert_id: str) -> AlertStatusResponse:
         token_usage=list(state.get("token_usage", [])),
         cost_estimate_usd=float(state.get("cost_estimate_usd", 0.0)),
     )
-
-
-@app.get("/cost-report")
-async def cost_report() -> dict:
-    """Return aggregated cost metrics: total spend, savings from routing, cache hit rate."""
-    dsn = os.environ.get("POSTGRES_DSN", "")
-    if dsn:
-        return await get_cost_report(dsn)
-    # No Postgres — aggregate from the in-memory state store
-    states = list(_ALERT_STATES_MEMORY.values())
-    return aggregate_from_states(states)
 
 
 @app.post("/slack/interactive")

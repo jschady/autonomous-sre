@@ -18,7 +18,7 @@ from app.agents.state import SREState
 from app.config import get_settings
 from app.utils.incident_store import fetch_similar_incidents
 from app.utils.llm_cost import accumulate_cost, extract_usage
-from app.utils.llm_factory import invoke_with_fallback
+from app.utils.llm_factory import ainvoke_with_fallback
 from app.utils.prompt_loader import build_few_shot_section, load_prompt, render_prompt
 from data.sops.mock_sops import search_sops
 
@@ -78,10 +78,10 @@ async def research_node(state: SREState) -> dict:
             sop_context=sop_context,
             few_shot_section=few_shot_section,
         )
-        response = invoke_with_fallback(
+        response = await ainvoke_with_fallback(
             provider=llm_provider,
             messages=[HumanMessage(content=prompt)],
-            model_override=settings.processor_model,
+            model_override=settings.processor_model if llm_provider == "claude" else None,
         )
         recommended_action = response.content.strip()
 
@@ -100,14 +100,15 @@ async def research_node(state: SREState) -> dict:
         }
 
     # Determine effective model for cost tracking.
-    # If the local LLM was unreachable, invoke_with_fallback silently used Claude,
-    # so we check the response metadata to pick the right model label.
+    # For local provider, check response metadata to detect Claude fallback.
     response_model = getattr(response, "response_metadata", {}).get("model_id", "")
-    effective_model = (
-        settings.local_model_name
-        if llm_provider == "local" and settings.local_model_enabled and not response_model
-        else settings.processor_model
-    )
+    if llm_provider == "local" and settings.local_model_enabled and not response_model:
+        effective_model = settings.local_model_name
+    elif llm_provider == "local":
+        # Local failed and fell back to Claude — response_model holds the Claude model id
+        effective_model = response_model or settings.triage_model
+    else:
+        effective_model = settings.processor_model
 
     usage = extract_usage("researcher", effective_model, response)
     updated_token_usage = list(state.get("token_usage", [])) + [dict(usage)]

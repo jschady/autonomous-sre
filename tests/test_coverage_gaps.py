@@ -9,7 +9,6 @@ import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from langchain_core.messages import AIMessage
 
-import app.tools.k8s_tools as k8s_tools
 from app.tools.k8s_tools import EXECUTED_ACTIONS
 from app.agents.state import create_initial_state, _resolve_max_retries
 from app.nodes.action import action_node, _determine_action_tool
@@ -19,13 +18,6 @@ from app.agents.graph import route_after_triage, route_after_verification
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def reset_mock_state():
-    EXECUTED_ACTIONS.clear()
-    k8s_tools.MOCK_HEALTHY = False
-    yield
-
 
 @pytest.fixture(autouse=True)
 def reset_main_state():

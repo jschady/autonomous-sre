@@ -30,7 +30,6 @@ EXECUTED_ACTIONS: list[str] = []
 # RBAC error sentinel
 # ---------------------------------------------------------------------------
 
-_RBAC_ERROR = "RBAC_DENIED"
 _RBAC_PREFIX = "[RBAC_DENIED]"
 
 
@@ -81,6 +80,7 @@ class GetSystemMetricsInput(BaseModel):
 
 class RestartServiceInput(BaseModel):
     service_id: str = Field(..., min_length=1, description="Deployment name to restart")
+    namespace: str = Field(default="default", description="Kubernetes namespace")
 
     @field_validator("service_id")
     @classmethod
@@ -92,6 +92,7 @@ class RestartServiceInput(BaseModel):
 
 class ExecuteRollbackInput(BaseModel):
     deployment_name: str = Field(..., min_length=1, description="Deployment name to roll back")
+    namespace: str = Field(default="default", description="Kubernetes namespace")
 
 
 # ---------------------------------------------------------------------------
@@ -211,39 +212,118 @@ def fetch_container_logs(pod_id: str, container: str, tail: int = 100) -> str:
 def get_system_metrics(service_name: str) -> str:
     """Retrieve current system metrics for the specified service.
 
+    Queries Prometheus when PROMETHEUS_URL is configured; falls back to
+    mock data (controlled by MOCK_HEALTHY) for local dev and tests.
+
     Returns a structured string with error_rate, latency_p99, cpu_usage, memory_usage.
-    Uses the module-level MOCK_HEALTHY flag to simulate healthy vs unhealthy state.
     """
     _ = GetSystemMetricsInput(service_name=service_name)
 
+    from app.config import get_settings
+    prometheus_url = get_settings().prometheus_url
+    if prometheus_url:
+        return _query_prometheus(service_name, prometheus_url)
+
+    return _mock_metrics(service_name)
+
+
+def _query_prometheus(service_name: str, prometheus_url: str) -> str:
+    """Query Prometheus for real service metrics."""
+    import httpx
+
+    base = prometheus_url.rstrip("/")
+    queries = {
+        "error_rate": (
+            f'sum(rate(http_requests_total{{service="{service_name}",status=~"5.."}}[5m])) '
+            f'/ sum(rate(http_requests_total{{service="{service_name}"}}[5m]))'
+        ),
+        "latency_p99": (
+            f'histogram_quantile(0.99, sum(rate('
+            f'http_request_duration_seconds_bucket{{service="{service_name}"}}[5m])) by (le))'
+        ),
+        "cpu_usage": (
+            f'sum(rate(container_cpu_usage_seconds_total{{container="{service_name}"}}[5m])) * 100'
+        ),
+        "memory_usage": (
+            f'sum(container_memory_working_set_bytes{{container="{service_name}"}}) '
+            f'/ sum(container_spec_memory_limit_bytes{{container="{service_name}"}}) * 100'
+        ),
+    }
+
+    results: dict[str, str] = {}
+    try:
+        with httpx.Client(timeout=10) as client:
+            for metric, query in queries.items():
+                resp = client.get(f"{base}/api/v1/query", params={"query": query})
+                resp.raise_for_status()
+                data = resp.json()
+                result_list = data.get("data", {}).get("result", [])
+                if result_list:
+                    raw_value = float(result_list[0]["value"][1])
+                    if metric == "latency_p99":
+                        results[metric] = f"{raw_value * 1000:.0f}ms"
+                    else:
+                        results[metric] = f"{raw_value:.1f}%"
+                else:
+                    results[metric] = "N/A"
+    except Exception as exc:
+        logger.error("Prometheus query failed for service=%s: %s", service_name, exc)
+        return (
+            f"[ERROR] Failed to fetch metrics from Prometheus for service '{service_name}': {exc}"
+        )
+
+    error_rate = results.get("error_rate", "N/A")
+    latency = results.get("latency_p99", "N/A")
+    cpu = results.get("cpu_usage", "N/A")
+    memory = results.get("memory_usage", "N/A")
+
+    # Determine status from error rate
+    status = "healthy"
+    try:
+        if error_rate != "N/A" and float(error_rate.rstrip("%")) > 5.0:
+            status = "degraded"
+    except ValueError:
+        pass
+
+    return (
+        f"service={service_name} "
+        f"error_rate={error_rate} "
+        f"latency_p99={latency} "
+        f"cpu_usage={cpu} "
+        f"memory_usage={memory} "
+        f"status={status}"
+    )
+
+
+def _mock_metrics(service_name: str) -> str:
+    """Return hardcoded mock metrics for local dev and tests."""
     if MOCK_HEALTHY:
         return (
             f"service={service_name} "
-            "error_rate=0.2 "
+            "error_rate=0.2% "
             "latency_p99=45ms "
-            "cpu_usage=22% "
-            "memory_usage=38% "
+            "cpu_usage=22.0% "
+            "memory_usage=38.0% "
             "status=healthy"
         )
     return (
         f"service={service_name} "
-        "error_rate=12.5 "
+        "error_rate=12.5% "
         "latency_p99=4500ms "
-        "cpu_usage=92% "
-        "memory_usage=88% "
+        "cpu_usage=92.0% "
+        "memory_usage=88.0% "
         "status=degraded"
     )
 
 
 @tool
-def restart_service(service_id: str) -> str:
+def restart_service(service_id: str, namespace: str = "default") -> str:
     """Restart a Kubernetes deployment by rolling restart.
 
     Issues a patch to the deployment's pod template annotations to force a
     rolling restart.  Records the action in EXECUTED_ACTIONS for audit.
     """
-    _ = RestartServiceInput(service_id=service_id)
-    namespace = "default"
+    _ = RestartServiceInput(service_id=service_id, namespace=namespace)
 
     try:
         apps = _get_apps_v1()
@@ -281,14 +361,13 @@ def restart_service(service_id: str) -> str:
 
 
 @tool
-def execute_rollback(deployment_name: str) -> str:
+def execute_rollback(deployment_name: str, namespace: str = "default") -> str:
     """Roll back a Kubernetes deployment to the previous stable revision.
 
     Patches the deployment with an annotation to trigger undo, then records
     the action in EXECUTED_ACTIONS for audit.
     """
-    _ = ExecuteRollbackInput(deployment_name=deployment_name)
-    namespace = "default"
+    _ = ExecuteRollbackInput(deployment_name=deployment_name, namespace=namespace)
 
     try:
         apps = _get_apps_v1()

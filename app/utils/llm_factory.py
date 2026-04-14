@@ -79,16 +79,15 @@ def _build_claude_client(settings, model_override: str | None) -> BaseChatModel:
     )
 
 
-def invoke_with_fallback(
+async def ainvoke_with_fallback(
     provider: str,
     messages: list,
     model_override: str | None = None,
 ):
-    """Invoke the LLM for the given provider, falling back to Claude on failure.
+    """Async LLM invoke with fallback to Claude. Use this in async node functions.
 
-    The local client is constructed lazily and only tested at invocation time.
-    If the call fails (e.g. RunPod endpoint unreachable), this retries once
-    with Claude and logs a warning rather than propagating the error.
+    If the call fails (e.g. RunPod endpoint unreachable), retries once with
+    Claude and logs a warning rather than propagating the error.
 
     Returns the LangChain response object.
     Raises only if the Claude fallback also fails.
@@ -98,12 +97,12 @@ def invoke_with_fallback(
 
     if provider == "local" and settings.local_model_enabled:
         try:
-            return client.invoke(messages)
+            return await client.ainvoke(messages)
         except Exception as exc:
             logger.warning(
-                "Local LLM invoke failed (%s) — falling back to Claude", exc
+                "Local LLM ainvoke failed (%s) — falling back to Claude", exc
             )
             claude = _build_claude_client(settings, model_override)
-            return claude.invoke(messages)
+            return await claude.ainvoke(messages)
 
-    return client.invoke(messages)
+    return await client.ainvoke(messages)

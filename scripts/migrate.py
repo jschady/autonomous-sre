@@ -57,33 +57,11 @@ CREATE INDEX IF NOT EXISTS sops_embeddings_fts_idx
     USING GIN (to_tsvector('english', title || ' ' || content));
 """
 
-CREATE_ALERT_COSTS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS alert_costs (
-    alert_id        TEXT PRIMARY KEY,
-    alertname       TEXT NOT NULL DEFAULT '',
-    total_tokens    INTEGER NOT NULL DEFAULT 0,
-    input_tokens    INTEGER NOT NULL DEFAULT 0,
-    output_tokens   INTEGER NOT NULL DEFAULT 0,
-    cost_usd        NUMERIC(12, 8) NOT NULL DEFAULT 0,
-    node_breakdown  JSONB NOT NULL DEFAULT '[]',
-    resolved        BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-"""
-
-CREATE_ALERT_COSTS_IDX_SQL = """
-CREATE INDEX IF NOT EXISTS alert_costs_created_at_idx
-    ON alert_costs (created_at DESC);
-"""
-
 ALL_MIGRATIONS: list[tuple[str, str]] = [
     ("create_vector_extension", CREATE_EXTENSION_SQL),
     ("create_sops_embeddings_table", CREATE_SOPS_TABLE_SQL),
     ("create_sops_ivfflat_index", CREATE_SOPS_EMBEDDING_INDEX_SQL),
     ("create_sops_fts_index", CREATE_SOPS_FTS_INDEX_SQL),
-    ("create_alert_costs_table", CREATE_ALERT_COSTS_TABLE_SQL),
-    ("create_alert_costs_index", CREATE_ALERT_COSTS_IDX_SQL),
 ]
 
 

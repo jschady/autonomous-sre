@@ -18,7 +18,7 @@ from app.agents.state import SREState
 from app.config import get_settings
 from app.tools import TOOL_REGISTRY
 from app.utils.llm_cost import accumulate_cost, extract_usage
-from app.utils.llm_factory import invoke_with_fallback
+from app.utils.llm_factory import ainvoke_with_fallback
 from app.utils.prompt_loader import load_prompt, render_prompt
 
 # Character budget for raw_logs passed to the summary LLM.
@@ -75,7 +75,7 @@ async def processor_node(state: SREState) -> dict:
             service=service,
             raw_data=raw_data_for_llm,
         )
-        response = invoke_with_fallback(
+        response = await ainvoke_with_fallback(
             provider="claude",
             messages=[HumanMessage(content=prompt)],
             model_override=settings.processor_model,
@@ -117,4 +117,8 @@ def _invoke_tool(tool_name: str, tool, namespace: str, service: str, pod: str) -
         return tool.invoke({"pod_id": pod, "container": service})
     if tool_name == "get_system_metrics":
         return tool.invoke({"service_name": service})
-    return tool.invoke({"service_id": service}) if tool_name == "restart_service" else str(tool_name)
+    if tool_name == "restart_service":
+        return tool.invoke({"service_id": service, "namespace": namespace})
+    if tool_name == "execute_rollback":
+        return tool.invoke({"deployment_name": service, "namespace": namespace})
+    raise ValueError(f"No argument mapping defined for tool: {tool_name!r}")

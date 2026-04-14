@@ -1,10 +1,15 @@
 """Shared pytest fixtures for the Autonomous SRE test suite."""
 from __future__ import annotations
 
+import os
 import pytest
 import pytest_asyncio
 from unittest.mock import patch, MagicMock
 from httpx import AsyncClient, ASGITransport
+
+# Disable LangSmith tracing globally in tests to prevent network hangs
+os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
+os.environ.setdefault("LANGSMITH_TRACING", "false")
 
 import app.tools.k8s_tools as k8s_tools
 from app.tools.k8s_tools import EXECUTED_ACTIONS

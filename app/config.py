@@ -44,12 +44,11 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 86400
     semantic_cache_enabled: bool = False
 
+    # Prometheus metrics endpoint (empty = use mock data)
+    prometheus_url: str = ""
+
     # Prompt directory (Phase 3D)
     prompt_dir: str = "prompts"
-
-    # Local model pricing (USD per 1M tokens, compute-cost estimate)
-    local_model_input_price_per_m: float = 0.10
-    local_model_output_price_per_m: float = 0.10
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

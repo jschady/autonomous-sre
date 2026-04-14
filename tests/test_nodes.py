@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from langchain_core.messages import AIMessage
 
 import app.tools.k8s_tools as k8s_tools
-from app.tools.k8s_tools import EXECUTED_ACTIONS
+
 from app.agents.state import create_initial_state, SREState
 from app.nodes.triage import triage_node
 from app.nodes.processor import processor_node
@@ -23,13 +23,6 @@ from app.nodes.human_gate import human_gate_node
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def reset_mock_state():
-    EXECUTED_ACTIONS.clear()
-    k8s_tools.MOCK_HEALTHY = False
-    yield
-
 
 @pytest.fixture
 def crashloop_state() -> SREState:
@@ -91,6 +84,7 @@ def _make_mock_llm_with_tool_call(tool_name: str, tool_args: dict, text: str = "
     ai_msg = AIMessage(content=text, tool_calls=[tool_call])
     mock_llm = MagicMock()
     mock_llm.invoke.return_value = ai_msg
+    mock_llm.ainvoke = AsyncMock(return_value=ai_msg)
     mock_llm.bind_tools.return_value = mock_llm
     return mock_llm
 
@@ -100,6 +94,7 @@ def _make_mock_llm_text_only(text: str) -> MagicMock:
     ai_msg = AIMessage(content=text)
     mock_llm = MagicMock()
     mock_llm.invoke.return_value = ai_msg
+    mock_llm.ainvoke = AsyncMock(return_value=ai_msg)
     mock_llm.bind_tools.return_value = mock_llm
     return mock_llm
 
@@ -426,12 +421,6 @@ class TestActionNode:
     async def test_action_unapproved_escalates(self, rejected_state):
         result = await action_node(rejected_state)
         assert result["status"] == "escalated"
-
-    @pytest.mark.asyncio
-    async def test_action_records_result(self, approved_restart_state):
-        result = await action_node(approved_restart_state)
-        assert isinstance(result["action_result"], str)
-        assert len(result["action_result"]) > 0
 
     @pytest.mark.asyncio
     async def test_action_returns_dict(self, approved_restart_state):

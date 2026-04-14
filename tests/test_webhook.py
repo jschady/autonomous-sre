@@ -12,19 +12,12 @@ from httpx import AsyncClient, ASGITransport
 from langchain_core.messages import AIMessage
 
 import app.tools.k8s_tools as k8s_tools
-from app.tools.k8s_tools import EXECUTED_ACTIONS
+
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def reset_mock_state():
-    EXECUTED_ACTIONS.clear()
-    k8s_tools.MOCK_HEALTHY = False
-    yield
-
 
 @pytest.fixture
 def sample_alert():
