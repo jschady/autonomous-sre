@@ -68,6 +68,8 @@ class TestGetLlmClientLocal:
              patch("app.utils.llm_factory._build_local_client", return_value=mock_local):
             mock_settings.return_value = MagicMock(
                 local_model_enabled=True,
+                runpod_serverless_enabled=False,
+                runpod_serverless_endpoint_id="",
                 runpod_base_url="https://example.runpod.net/v1",
                 triage_model="claude-sonnet-4-6",
                 anthropic_api_key="test-key",
@@ -82,6 +84,8 @@ class TestGetLlmClientLocal:
              patch("app.utils.llm_factory._build_claude_client", return_value=mock_claude):
             mock_settings.return_value = MagicMock(
                 local_model_enabled=True,
+                runpod_serverless_enabled=False,
+                runpod_serverless_endpoint_id="",
                 runpod_base_url="https://example.runpod.net/v1",
                 triage_model="claude-sonnet-4-6",
                 anthropic_api_key="test-key",

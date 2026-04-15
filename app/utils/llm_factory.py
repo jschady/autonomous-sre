@@ -29,14 +29,46 @@ def get_llm_client(
     """
     settings = get_settings()
 
-    if provider == "local" and settings.local_model_enabled and settings.runpod_base_url:
-        return _build_local_client(settings) or _build_claude_client(settings, model_override)
+    if provider == "local" and settings.local_model_enabled:
+        if settings.runpod_serverless_enabled and settings.runpod_serverless_endpoint_id:
+            client = _build_serverless_client(settings)
+        elif settings.runpod_base_url:
+            client = _build_local_client(settings)
+        else:
+            client = None
+        return client or _build_claude_client(settings, model_override)
 
     return _build_claude_client(settings, model_override)
 
 
+def _build_serverless_client(settings) -> BaseChatModel | None:
+    """Build a RunPodServerlessChat client for the configured serverless endpoint.
+
+    Returns None on any failure so the caller can fall back to Claude.
+    """
+    try:
+        from app.utils.runpod_client import RunPodServerlessChat
+
+        client = RunPodServerlessChat(
+            endpoint_id=settings.runpod_serverless_endpoint_id,
+            api_key=settings.runpod_api_key or "",
+            model_name=settings.local_model_name,
+            timeout=settings.runpod_cold_start_timeout,
+        )
+        logger.info(
+            "LLM factory: using RunPod Serverless endpoint %s",
+            settings.runpod_serverless_endpoint_id,
+        )
+        return client
+    except Exception as exc:
+        logger.warning(
+            "Failed to build RunPod Serverless client (%s) — falling back to Claude", exc
+        )
+        return None
+
+
 def _build_local_client(settings) -> BaseChatModel | None:  # type: ignore[return]
-    """Try to build a ChatOpenAI client pointing at the RunPod vLLM endpoint.
+    """Try to build a ChatOpenAI client pointing at the RunPod always-on vLLM endpoint.
 
     Returns None on any failure so the caller can fall back to Claude.
     """
@@ -47,7 +79,8 @@ def _build_local_client(settings) -> BaseChatModel | None:  # type: ignore[retur
             base_url=settings.runpod_base_url,
             api_key=settings.runpod_api_key or "EMPTY",
             model=settings.local_model_name,
-            timeout=30,
+            timeout=settings.runpod_cold_start_timeout,
+            max_retries=0,
         )
         logger.info(
             "LLM factory: using local model %s at %s",

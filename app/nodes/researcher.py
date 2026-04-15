@@ -20,15 +20,15 @@ from app.utils.incident_store import fetch_similar_incidents
 from app.utils.llm_cost import accumulate_cost, extract_usage
 from app.utils.llm_factory import ainvoke_with_fallback
 from app.utils.prompt_loader import build_few_shot_section, load_prompt, render_prompt
-from data.sops.mock_sops import search_sops
+from app.tools.db_tools import _search as _db_search
 
 logger = logging.getLogger(__name__)
 
 
 @traceable(name="search_knowledge_base", run_type="tool", metadata={"phase": "research"})
 def _search_knowledge_base(query: str) -> list[dict]:
-    """Traceable wrapper around search_sops so LangSmith captures the SOP lookup."""
-    return search_sops(query)
+    """Search SOPs via vector DB (when USE_VECTOR_DB=true) or keyword fallback."""
+    return _db_search(query)
 
 
 @traceable(name="research_node", metadata={"phase": "research"})

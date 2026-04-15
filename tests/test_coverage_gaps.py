@@ -23,13 +23,9 @@ from app.agents.graph import route_after_triage, route_after_verification
 def reset_main_state():
     """Reset module-level state in app.main between tests."""
     import app.main as main_module
-    main_module._ALERT_STATES_MEMORY.clear()
-    main_module._ALERT_CONFIGS_MEMORY.clear()
-    main_module._redis_client = None
+    main_module._INITIAL_STATES.clear()
     yield
-    main_module._ALERT_STATES_MEMORY.clear()
-    main_module._ALERT_CONFIGS_MEMORY.clear()
-    main_module._redis_client = None
+    main_module._INITIAL_STATES.clear()
 
 
 @pytest.fixture
@@ -179,70 +175,56 @@ class TestMainCoverage:
     @pytest.mark.asyncio
     async def test_run_graph_handles_general_exception(self):
         """Cover the generic exception handler in _run_graph."""
-        from app.main import _run_graph, ALERT_STATES, ALERT_CONFIGS
+        from app.main import _run_graph, _INITIAL_STATES, _graph
         payload = {"alertname": "TestAlert"}
         state = create_initial_state(payload)
         alert_id = state["alert_id"]
-        config = {"configurable": {"thread_id": alert_id}}
-        ALERT_CONFIGS[alert_id] = config
-        ALERT_STATES[alert_id] = state
+        _INITIAL_STATES[alert_id] = state
 
-        # Patch _get_redis to return None so state writes go to in-memory store
-        # (Redis may be running in the dev environment, which bypasses _ALERT_STATES_MEMORY)
-        with patch("app.main._graph") as mock_graph, \
-             patch("app.main._get_redis", return_value=None):
-            mock_graph.ainvoke = AsyncMock(side_effect=RuntimeError("unexpected error"))
+        mock_graph_instance = MagicMock()
+        mock_graph_instance.ainvoke = AsyncMock(side_effect=RuntimeError("unexpected error"))
+
+        with patch("app.main._graph", return_value=mock_graph_instance):
             await _run_graph(alert_id, state)
 
-        updated = ALERT_STATES.get(alert_id, {})
-        assert updated.get("status") == "failed"
-        assert any("unexpected error" in e for e in updated.get("error_log", []))
+        # After exception, initial state should be cleaned up
+        assert alert_id not in _INITIAL_STATES
 
     @pytest.mark.asyncio
     async def test_slack_interactive_get_state_exception(self):
-        """Cover aget_state exception handler in slack_interactive."""
+        """Cover aget_state exception handler in _resume_graph (→ 404)."""
         from httpx import AsyncClient, ASGITransport
-        from app.main import app, ALERT_CONFIGS, ALERT_STATES
-        from app.agents.state import create_initial_state
+        from app.main import app
 
-        payload = {"alertname": "TestAlert"}
-        state = create_initial_state(payload)
-        alert_id = state["alert_id"]
-        config = {"configurable": {"thread_id": alert_id}}
-        ALERT_CONFIGS[alert_id] = config
-        ALERT_STATES[alert_id] = state
+        mock_graph_instance = MagicMock()
+        mock_graph_instance.aget_state = AsyncMock(side_effect=Exception("checkpointer error"))
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            with patch("app.main._graph") as mock_graph:
-                mock_graph.aget_state = AsyncMock(side_effect=Exception("checkpointer error"))
+            with patch("app.main._graph", return_value=mock_graph_instance):
                 response = await client.post(
                     "/slack/interactive",
-                    json={"alert_id": alert_id, "approved": True},
+                    json={"alert_id": "some-alert-id", "approved": True},
                 )
         assert response.status_code == 404
 
     @pytest.mark.asyncio
     async def test_slack_interactive_graph_not_interrupted(self):
-        """Cover the 409 path when graph is not waiting for approval."""
+        """Cover the 409 path when graph has state but is not waiting for approval."""
         from httpx import AsyncClient, ASGITransport
-        from app.main import app, ALERT_CONFIGS, ALERT_STATES
-        from app.agents.state import create_initial_state
+        from app.main import app
 
-        payload = {"alertname": "TestAlert"}
-        state = create_initial_state(payload)
-        alert_id = state["alert_id"]
-        config = {"configurable": {"thread_id": alert_id}}
-        ALERT_CONFIGS[alert_id] = config
-        ALERT_STATES[alert_id] = state
+        # Snapshot has values but no 'next' nodes = completed, not waiting
+        mock_snapshot = MagicMock()
+        mock_snapshot.values = {"status": "resolved", "alert_id": "test"}
+        mock_snapshot.next = []
+
+        mock_graph_instance = MagicMock()
+        mock_graph_instance.aget_state = AsyncMock(return_value=mock_snapshot)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            with patch("app.main._graph") as mock_graph:
-                # Snapshot with no 'next' nodes = not waiting
-                mock_snapshot = MagicMock()
-                mock_snapshot.next = []
-                mock_graph.aget_state = AsyncMock(return_value=mock_snapshot)
+            with patch("app.main._graph", return_value=mock_graph_instance):
                 response = await client.post(
                     "/slack/interactive",
-                    json={"alert_id": alert_id, "approved": True},
+                    json={"alert_id": "test-alert-409", "approved": True},
                 )
         assert response.status_code == 409

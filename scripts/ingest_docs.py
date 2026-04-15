@@ -149,7 +149,7 @@ async def ingest_all(dsn: str) -> int:
     logger.info("Found %d SOP files to ingest", len(md_files))
 
     openai_client = openai.AsyncOpenAI(api_key=api_key)
-    conn = await asyncpg.connect(dsn)
+    conn = await asyncpg.connect(dsn, statement_cache_size=0)
 
     try:
         count = 0

@@ -15,7 +15,7 @@ from langchain_core.tools import tool
 from kubernetes.client.exceptions import ApiException
 from pydantic import BaseModel, Field, field_validator
 
-from app.tools.k8s_client import get_apps_v1_api, get_core_v1_api
+from app.tools.k8s_client import get_apps_v1_api, get_core_v1_api, k8s_available
 
 logger = logging.getLogger(__name__)
 
@@ -113,12 +113,18 @@ def _parse_pod_ref(pod_id: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
+_K8S_DISABLED_MSG = "[K8s not configured] Set K8S_ENABLED=true and provide KUBECONFIG_B64 or KUBECONFIG."
+
+
 @tool
 def get_cluster_events(namespace: str, service: str) -> str:
     """Retrieve recent Kubernetes cluster events for a given namespace and service.
 
     Returns a formatted string of events useful for diagnosing pod failures.
     """
+    if not k8s_available():
+        return _K8S_DISABLED_MSG
+
     # Validate input
     _ = GetClusterEventsInput(namespace=namespace, service=service)
 
@@ -181,6 +187,9 @@ def fetch_container_logs(pod_id: str, container: str, tail: int = 100) -> str:
     Returns the last `tail` lines of logs from the specified container.
     pod_id may be 'namespace/pod-name' or bare 'pod-name' (defaults to 'default').
     """
+    if not k8s_available():
+        return _K8S_DISABLED_MSG
+
     _ = FetchContainerLogsInput(pod_id=pod_id, container=container, tail=tail)
     namespace, pod_name = _parse_pod_ref(pod_id)
 
@@ -220,9 +229,9 @@ def get_system_metrics(service_name: str) -> str:
     _ = GetSystemMetricsInput(service_name=service_name)
 
     from app.config import get_settings
-    prometheus_url = get_settings().prometheus_url
-    if prometheus_url:
-        return _query_prometheus(service_name, prometheus_url)
+    settings = get_settings()
+    if settings.prometheus_enabled and settings.prometheus_url:
+        return _query_prometheus(service_name, settings.prometheus_url)
 
     return _mock_metrics(service_name)
 
@@ -323,6 +332,9 @@ def restart_service(service_id: str, namespace: str = "default") -> str:
     Issues a patch to the deployment's pod template annotations to force a
     rolling restart.  Records the action in EXECUTED_ACTIONS for audit.
     """
+    if not k8s_available():
+        return _K8S_DISABLED_MSG
+
     _ = RestartServiceInput(service_id=service_id, namespace=namespace)
 
     try:
@@ -367,6 +379,9 @@ def execute_rollback(deployment_name: str, namespace: str = "default") -> str:
     Patches the deployment with an annotation to trigger undo, then records
     the action in EXECUTED_ACTIONS for audit.
     """
+    if not k8s_available():
+        return _K8S_DISABLED_MSG
+
     _ = ExecuteRollbackInput(deployment_name=deployment_name, namespace=namespace)
 
     try:

@@ -49,7 +49,7 @@ async def triage_node(state: SREState) -> dict:
             tool_names=", ".join(TOOL_REGISTRY.keys()),
         )
 
-        response = llm.invoke([HumanMessage(content=prompt)])
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
         parsed = _parse_triage_response(response.content)
 
         severity = parsed.get("severity", "unknown")

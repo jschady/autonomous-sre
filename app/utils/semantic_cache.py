@@ -21,19 +21,13 @@ logger = logging.getLogger(__name__)
 _CACHE_KEY_PREFIX = "cache:incident:"
 _SCAN_BATCH_SIZE = 100
 
-# Module-level connection pool — one pool per Redis URL, reused across calls.
-_pools: dict[str, object] = {}
-
-
-def _get_pool(redis_url: str) -> object:
-    """Return a cached ConnectionPool for the given URL, creating it if needed."""
-    if redis_url not in _pools:
-        try:
-            import redis.asyncio as aioredis  # type: ignore[import-untyped]
-        except ImportError:
-            return None  # type: ignore[return-value]
-        _pools[redis_url] = aioredis.ConnectionPool.from_url(redis_url, decode_responses=True)
-    return _pools[redis_url]
+def _get_redis_client(redis_url: str):  # type: ignore[return]
+    """Return a Redis client for the given URL, or None on any failure."""
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import-untyped]
+        return aioredis.from_url(redis_url, decode_responses=True)
+    except Exception:
+        return None
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -100,8 +94,8 @@ async def cache_lookup(
     if not redis_url or not error_summary:
         return None
 
-    pool = _get_pool(redis_url)
-    if pool is None:
+    r = _get_redis_client(redis_url)
+    if r is None:
         logger.warning("redis package not installed — semantic cache disabled")
         return None
 
@@ -112,8 +106,6 @@ async def cache_lookup(
         return None
 
     try:
-        import redis.asyncio as aioredis  # type: ignore[import-untyped]
-        r = aioredis.Redis(connection_pool=pool)
         cursor = 0
         best_similarity = 0.0
         best_entry: dict | None = None
@@ -170,12 +162,11 @@ async def cache_store(
     if not redis_url or not error_summary:
         return
 
-    pool = _get_pool(redis_url)
-    if pool is None:
+    r = _get_redis_client(redis_url)
+    if r is None:
         return
 
     try:
-        import redis.asyncio as aioredis  # type: ignore[import-untyped]
         embedding = await compute_embedding(error_summary)
         cache_key = _make_cache_key(embedding)
         payload = json.dumps(
@@ -186,7 +177,6 @@ async def cache_store(
                 "cached_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-        r = aioredis.Redis(connection_pool=pool)
         await r.set(cache_key, payload, ex=ttl_seconds)
         logger.info("Stored incident in semantic cache: key=%s", cache_key)
     except Exception as exc:

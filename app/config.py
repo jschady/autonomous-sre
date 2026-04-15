@@ -44,11 +44,34 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 86400
     semantic_cache_enabled: bool = False
 
-    # Prometheus metrics endpoint (empty = use mock data)
+    # Kubernetes — set one of:
+    #   KUBECONFIG_B64   base64-encoded kubeconfig (docker-friendly, no volume mount needed)
+    #   KUBECONFIG       path to kubeconfig file   (kubernetes lib reads this automatically)
+    #   K8S_ENABLED=false to disable k8s tooling entirely
+    kubeconfig_b64: str = ""
+    k8s_enabled: bool = True
+
+    # Prometheus metrics endpoint
+    #   PROMETHEUS_URL   full base URL, e.g. https://prometheus.example.com
+    #   PROMETHEUS_ENABLED=false to disable (falls back to mock data)
     prometheus_url: str = ""
+    prometheus_enabled: bool = True
 
     # Prompt directory (Phase 3D)
     prompt_dir: str = "prompts"
+
+    # Phase 4B: Slack (signing + bot token for Block Kit notifications)
+    slack_signing_secret: str = ""
+    slack_bot_token: str = ""
+    slack_channel_id: str = ""
+
+    # Phase 4B: VPS / firewall
+    prometheus_server_ip: str = ""
+
+    # Phase 4C: RunPod Serverless
+    runpod_serverless_enabled: bool = False
+    runpod_serverless_endpoint_id: str = ""
+    runpod_cold_start_timeout: int = 300
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

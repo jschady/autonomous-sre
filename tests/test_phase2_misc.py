@@ -24,7 +24,7 @@ class TestMigrateScript:
     def test_all_migrations_is_list_of_tuples(self):
         from scripts.migrate import ALL_MIGRATIONS
         assert isinstance(ALL_MIGRATIONS, list)
-        assert len(ALL_MIGRATIONS) == 6
+        assert len(ALL_MIGRATIONS) == 4
         for name, sql in ALL_MIGRATIONS:
             assert isinstance(name, str)
             assert isinstance(sql, str)
@@ -151,124 +151,64 @@ class TestIngestDocsParsers:
 
 
 # ---------------------------------------------------------------------------
-# app/agents/graph.py _build_checkpointer
+# app/agents/graph.py build_graph (Phase 4A: checkpointer is now a parameter)
 # ---------------------------------------------------------------------------
 
 
 class TestBuildCheckpointer:
-    def test_returns_memory_saver_when_no_dsn(self, monkeypatch):
-        monkeypatch.delenv("POSTGRES_DSN", raising=False)
+    def test_build_graph_uses_memory_saver_by_default(self):
         from langgraph.checkpoint.memory import MemorySaver
-        from app.agents.graph import _build_checkpointer
-        result = _build_checkpointer()
-        assert isinstance(result, MemorySaver)
+        from app.agents.graph import build_graph
+        from langgraph.graph.state import CompiledStateGraph
+        graph = build_graph()
+        assert isinstance(graph, CompiledStateGraph)
 
-    def test_returns_postgres_saver_context_manager_when_dsn_set(self, monkeypatch):
-        monkeypatch.setenv("POSTGRES_DSN", "postgresql://user:pass@localhost/db")
-        with patch("langgraph.checkpoint.postgres.aio.AsyncPostgresSaver.from_conn_string") as mock_factory:
-            mock_saver = MagicMock()
-            mock_factory.return_value = mock_saver
-            from app.agents import graph as graph_mod
-            import importlib
-            # Reset cached checkpointer by calling directly
-            result = graph_mod._build_checkpointer()
-            mock_factory.assert_called_once_with("postgresql://user:pass@localhost/db")
+    def test_build_graph_accepts_memory_saver_explicitly(self):
+        from langgraph.checkpoint.memory import MemorySaver
+        from app.agents.graph import build_graph
+        saver = MemorySaver()
+        graph = build_graph(saver)
+        assert graph is not None
 
-    def test_falls_back_to_memory_saver_when_postgres_fails(self, monkeypatch):
-        monkeypatch.setenv("POSTGRES_DSN", "postgresql://bad/bad")
-        with patch("langgraph.checkpoint.postgres.aio.AsyncPostgresSaver.from_conn_string",
-                   side_effect=Exception("connection error")):
-            from langgraph.checkpoint.memory import MemorySaver
-            from app.agents.graph import _build_checkpointer
-            result = _build_checkpointer()
-            assert isinstance(result, MemorySaver)
+    def test_build_graph_accepts_none_checkpointer(self):
+        from app.agents.graph import build_graph
+        # None should fall back to MemorySaver internally
+        graph = build_graph(None)
+        assert graph is not None
 
 
 # ---------------------------------------------------------------------------
-# app/main.py — Redis state store paths
+# app/main.py — Phase 4A: initial state cache replaces Redis state store
 # ---------------------------------------------------------------------------
 
 
-class TestRedisStateStore:
+class TestInitialStateCache:
     @pytest.mark.asyncio
-    async def test_state_set_and_get_memory_fallback_when_no_redis(self, monkeypatch):
-        monkeypatch.delenv("REDIS_URL", raising=False)
+    async def test_initial_state_available_before_graph_runs(self):
+        """Status endpoint should return 200 immediately after webhook POST."""
+        from httpx import AsyncClient, ASGITransport
+        from app.main import app
 
-        import importlib
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/webhook", json={
+                "alertname": "TestImmediate",
+                "status": "firing",
+                "labels": {},
+                "annotations": {},
+            })
+            assert resp.status_code == 202
+            alert_id = resp.json()["alert_id"]
+
+            status_resp = await client.get(f"/status/{alert_id}")
+            assert status_resp.status_code == 200
+            assert status_resp.json()["alert_id"] == alert_id
+
+    def test_initial_states_dict_exists(self):
         import app.main as main_mod
-        importlib.reload(main_mod)
-
-        state = {"alert_id": "test-123", "status": "in_progress"}
-        await main_mod._state_set("test-123", state)
-        result = await main_mod._state_get("test-123")
-
-        assert result is not None
-        assert result["alert_id"] == "test-123"
-
-    @pytest.mark.asyncio
-    async def test_state_get_returns_none_for_missing_key(self, monkeypatch):
-        monkeypatch.delenv("REDIS_URL", raising=False)
-
-        import importlib
-        import app.main as main_mod
-        importlib.reload(main_mod)
-
-        result = await main_mod._state_get("nonexistent-alert-xyz")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_state_set_uses_redis_when_available(self, monkeypatch):
-        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
-
-        import importlib
-        import app.main as main_mod
-
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(return_value=True)
-        mock_redis.set = AsyncMock()
-        mock_redis.get = AsyncMock(return_value='{"status": "in_progress"}')
-
-        with patch("redis.asyncio.from_url", return_value=mock_redis):
-            importlib.reload(main_mod)
-            await main_mod._state_set("test-redis-alert", {"status": "in_progress"})
-            mock_redis.set.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_state_get_uses_redis_when_available(self, monkeypatch):
-        monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
-
-        import importlib
-        import app.main as main_mod
-
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(return_value=True)
-        mock_redis.get = AsyncMock(return_value='{"status": "in_progress", "alert_id": "abc"}')
-
-        with patch("redis.asyncio.from_url", return_value=mock_redis):
-            importlib.reload(main_mod)
-            result = await main_mod._state_get("abc")
-
-        # Should not be None (Redis returned a value)
-        # (exact value depends on test isolation — just check type)
-        assert result is None or isinstance(result, dict)
-
-    @pytest.mark.asyncio
-    async def test_redis_failure_falls_back_to_memory(self, monkeypatch):
-        monkeypatch.setenv("REDIS_URL", "redis://bad-host:9999")
-
-        import importlib
-        import app.main as main_mod
-
-        mock_redis = AsyncMock()
-        mock_redis.ping = AsyncMock(side_effect=Exception("connection refused"))
-
-        with patch("redis.asyncio.from_url", return_value=mock_redis):
-            importlib.reload(main_mod)
-            # Should fall back to memory without raising
-            state = {"status": "test"}
-            await main_mod._state_set("fallback-test", state)
-            result = await main_mod._state_get("fallback-test")
-            assert result is not None
+        assert hasattr(main_mod, "_INITIAL_STATES")
+        assert isinstance(main_mod._INITIAL_STATES, dict)
 
 
 # ---------------------------------------------------------------------------

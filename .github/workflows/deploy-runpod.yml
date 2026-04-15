@@ -1,0 +1,79 @@
+name: Deploy RunPod Serverless
+
+on:
+  # Auto-trigger after a successful image build on main.
+  # workflow_run always runs in the base repo context with full secret access,
+  # so we explicitly reject runs originating from forks below.
+  workflow_run:
+    workflows: ["Build vLLM Serverless Image"]
+    types: [completed]
+    branches: [main]
+  # Manual trigger to deploy any specific tag (e.g. rollback)
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (git SHA or "latest")'
+        required: true
+        default: 'latest'
+
+# Least-privilege: only read code; secrets are passed explicitly via env.
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Guard against:
+    # 1. Failed upstream builds
+    # 2. Fork PRs triggering workflow_run with access to base-repo secrets
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@a6a7d5c86aab63f0c29e5d61cb7cc56a99cd00cc  # v5.3.2
+
+      - name: Install Python dependencies
+        run: pip install --quiet pulumi pulumi-docker requests
+        working-directory: infra/runpod
+
+      - name: Resolve image tag
+        id: tag
+        # Use env vars for user-controlled inputs — never interpolate ${{ inputs.* }}
+        # directly into shell script bodies (expression injection risk).
+        env:
+          IMAGE_TAG_INPUT: ${{ inputs.image_tag }}
+          UPSTREAM_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "tag=$IMAGE_TAG_INPUT" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pulumi up
+        run: pulumi up --yes --stack prod
+        working-directory: infra/runpod
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          DOCKER_REGISTRY: docker.io/riccee
+          DOCKER_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+
+      - name: Summary
+        env:
+          DEPLOYED_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          echo "### Deployed to RunPod" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image tag: \`$DEPLOYED_TAG\`" >> "$GITHUB_STEP_SUMMARY"

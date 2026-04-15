@@ -1,108 +1,108 @@
 """FastAPI application for the Autonomous SRE webhook API.
 
 Endpoints:
-  POST /webhook           — Receive Alertmanager webhook, start graph execution
-  GET  /status/{alert_id} — Retrieve current graph state for an alert
+  POST /webhook            — Receive Alertmanager webhook, start graph execution
+  GET  /status/{alert_id}  — Retrieve current graph state for an alert
   POST /slack/interactive  — Receive Slack approval/rejection to resume graph
+  GET  /cost-report        — Aggregate cost breakdown across all alerts
 
 State persistence:
-  - Alert states stored in Redis when REDIS_URL is configured (Phase 2).
-  - Falls back to in-memory dict when Redis is unavailable (Phase 1 compat).
+  - When POSTGRES_DSN is set: AsyncPostgresSaver (Supabase / Postgres) provides
+    durable, resumable checkpointing across restarts and long pauses.
+  - Falls back to MemorySaver when POSTGRES_DSN is absent (local dev / tests).
+
+Lifespan:
+  The FastAPI lifespan context manager initialises the async checkpointer and
+  compiles the graph exactly once at startup, keeping the connection pool open
+  for the lifetime of the process.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import os
+from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 
 from app.config import get_settings as _get_settings
 _get_settings()  # export LANGCHAIN_* to os.environ before any LangChain import
 
 from app.agents.graph import build_graph
 from app.agents.state import SREState, create_initial_state
-from app.models import AlertStatusResponse, AlertWebhook, SlackInteraction
+from app.middleware.slack_verify import verify_slack_signature
+from app.models import AlertStatusResponse, AlertWebhook, SlackInteraction, SlackInteractionPayload
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Autonomous SRE", version="0.2.0")
-
 # ---------------------------------------------------------------------------
-# In-memory fallback store (used when Redis is unavailable)
+# In-process initial-state cache
+# Stores the submitted initial state so that /status/{alert_id} can return a
+# result immediately (before the background graph run populates the checkpointer).
+# Entries are removed once the graph run completes.
 # ---------------------------------------------------------------------------
 
-_ALERT_STATES_MEMORY: dict[str, SREState] = {}
-_ALERT_CONFIGS_MEMORY: dict[str, dict] = {}
-
-# Maps alert_id → graph config (thread_id for checkpointer)
-ALERT_CONFIGS: dict[str, dict] = _ALERT_CONFIGS_MEMORY
-
-# Single compiled graph instance (reused across requests)
-_graph = build_graph()
+_INITIAL_STATES: dict[str, SREState] = {}
 
 
 # ---------------------------------------------------------------------------
-# Redis state store (lazy initialisation)
+# Lifespan: initialise checkpointer + graph
 # ---------------------------------------------------------------------------
 
-_redis_client: Any = None
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = _get_settings()
+    if settings.postgres_dsn:
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            # prepare_threshold=None disables psycopg3 prepared statements entirely.
+            # NOTE: prepare_threshold=0 means "prepare on first use" (NOT disabled) —
+            # that causes "__pg3_N does not exist" errors with PgBouncer transaction
+            # mode (Supabase port 6543) because prepared statements are connection-scoped
+            # and PgBouncer can route each transaction to a different backend connection.
+            async with await psycopg.AsyncConnection.connect(
+                settings.postgres_dsn,
+                autocommit=True,
+                prepare_threshold=None,
+                row_factory=dict_row,
+            ) as conn:
+                saver = AsyncPostgresSaver(conn)
+                await saver.setup()
+                app.state.graph = build_graph(saver)
+                logger.info("Graph initialised with AsyncPostgresSaver (Supabase)")
+                yield
+        except Exception as exc:
+            logger.warning(
+                "AsyncPostgresSaver init failed (%s) — falling back to MemorySaver", exc
+            )
+            app.state.graph = build_graph()
+            yield
+    else:
+        app.state.graph = build_graph()
+        logger.info("Graph initialised with MemorySaver (no POSTGRES_DSN)")
+        yield
 
 
-def _get_redis_url() -> str:
-    return os.environ.get("REDIS_URL", "")
+app = FastAPI(title="Autonomous SRE", version="0.4.0", lifespan=lifespan)
 
 
-async def _get_redis() -> Any:
-    """Return a Redis client, or None if Redis is not configured/available."""
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-
-    url = _get_redis_url()
-    if not url:
-        return None
-
+def _graph():
+    """Return the compiled graph from app state, or build a fallback for tests."""
     try:
-        import redis.asyncio as aioredis
-        _redis_client = aioredis.from_url(url, decode_responses=True)
-        await _redis_client.ping()
-        logger.info("Redis connected at %s", url)
-        return _redis_client
-    except Exception as exc:
-        logger.warning("Redis unavailable (%s), using in-memory state store", exc)
-        _redis_client = None
-        return None
+        return app.state.graph
+    except AttributeError:
+        # Fallback for test contexts where lifespan is not running
+        if not hasattr(app, "_fallback_graph"):
+            app._fallback_graph = build_graph()
+        return app._fallback_graph
 
 
-async def _state_set(alert_id: str, state: SREState) -> None:
-    """Persist alert state to Redis (or fall back to memory)."""
-    r = await _get_redis()
-    if r is not None:
-        try:
-            await r.set(f"alert:{alert_id}", json.dumps(state), ex=86400)
-            return
-        except Exception as exc:
-            logger.warning("Redis set failed for alert %s: %s", alert_id, exc)
-    _ALERT_STATES_MEMORY[alert_id] = state
-
-
-async def _state_get(alert_id: str) -> SREState | None:
-    """Retrieve alert state from Redis (or fall back to memory)."""
-    r = await _get_redis()
-    if r is not None:
-        try:
-            raw = await r.get(f"alert:{alert_id}")
-            if raw is not None:
-                return json.loads(raw)
-        except Exception as exc:
-            logger.warning("Redis get failed for alert %s: %s", alert_id, exc)
-    return _ALERT_STATES_MEMORY.get(alert_id)
-
-
-ALERT_STATES = _ALERT_STATES_MEMORY
+def _make_config(alert_id: str) -> dict:
+    """Return the LangGraph config for a given alert_id."""
+    return {"configurable": {"thread_id": alert_id}}
 
 
 # ---------------------------------------------------------------------------
@@ -110,25 +110,18 @@ ALERT_STATES = _ALERT_STATES_MEMORY
 # ---------------------------------------------------------------------------
 
 async def _run_graph(alert_id: str, initial_state: SREState) -> None:
-    """Run the graph from initial state, persisting snapshots to state store."""
-    config = ALERT_CONFIGS[alert_id]
+    """Run the graph from initial state. State is persisted via the checkpointer."""
+    config = _make_config(alert_id)
     try:
         from langgraph.errors import GraphInterrupt
-        result = await _graph.ainvoke(initial_state, config=config)
-        await _state_set(alert_id, result)
-
+        await _graph().ainvoke(initial_state, config=config)
     except GraphInterrupt:
-        # Graph paused at human_gate — snapshot current state from checkpointer
-        snapshot = await _graph.aget_state(config)
-        if snapshot and snapshot.values:
-            await _state_set(alert_id, snapshot.values)  # type: ignore[arg-type]
+        # Graph paused at human_gate — state saved in checkpointer
+        logger.info("Graph paused at human_gate for alert %s", alert_id)
     except Exception as exc:
-        current = await _state_get(alert_id) or {}
-        await _state_set(alert_id, {  # type: ignore[arg-type]
-            **current,
-            "status": "failed",
-            "error_log": list(current.get("error_log", [])) + [str(exc)],
-        })
+        logger.error("Graph execution failed for alert %s: %s", alert_id, exc)
+    finally:
+        _INITIAL_STATES.pop(alert_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -139,57 +132,187 @@ async def _run_graph(alert_id: str, initial_state: SREState) -> None:
 async def receive_webhook(
     alert: AlertWebhook,
     background_tasks: BackgroundTasks,
-) -> dict[str, str]:
-    """Accept a Prometheus/Alertmanager webhook and start remediation graph."""
-    payload = alert.model_dump()
+) -> dict[str, Any]:
+    """Accept a Prometheus/Alertmanager webhook and start remediation graph.
+
+    Handles two formats:
+    - Alertmanager v4 envelope (``alerts`` array present): spawns one graph
+      run per individual alert; returns ``alert_ids`` list plus ``alert_id``
+      (first entry) for backward compatibility.
+    - Legacy flat format (tests / direct callers): single run, returns
+      ``alert_id``.
+    """
+    if alert.alerts:
+        # Alertmanager v4 envelope — process each alert individually
+        alert_ids: list[str] = []
+        for am_alert in alert.alerts:
+            labels = am_alert.get("labels", {})
+            alertname = (
+                labels.get("alertname")
+                or alert.groupLabels.get("alertname")
+                or alert.commonLabels.get("alertname")
+                or "unknown"
+            )
+            payload: dict[str, Any] = {
+                "alertname": alertname,
+                "status": am_alert.get("status", alert.status),
+                "labels": labels,
+                "annotations": am_alert.get("annotations", {}),
+                "startsAt": am_alert.get("startsAt", ""),
+                "endsAt": am_alert.get("endsAt", ""),
+                "generatorURL": am_alert.get("generatorURL", ""),
+            }
+            initial_state = create_initial_state(payload)
+            alert_id = initial_state["alert_id"]
+            _INITIAL_STATES[alert_id] = initial_state
+            background_tasks.add_task(_run_graph, alert_id, initial_state)
+            alert_ids.append(alert_id)
+        first_id = alert_ids[0] if alert_ids else ""
+        return {"alert_id": first_id, "alert_ids": alert_ids, "status": "accepted"}
+
+    # Legacy flat format
+    if not alert.alertname:
+        raise HTTPException(status_code=422, detail="alertname is required")
+    payload = alert.model_dump(exclude={"alerts", "groupLabels", "commonLabels"})
     initial_state = create_initial_state(payload)
     alert_id = initial_state["alert_id"]
-
-    config = {"configurable": {"thread_id": alert_id}}
-    ALERT_CONFIGS[alert_id] = config
-    await _state_set(alert_id, initial_state)
-
+    _INITIAL_STATES[alert_id] = initial_state
     background_tasks.add_task(_run_graph, alert_id, initial_state)
-
     return {"alert_id": alert_id, "status": "accepted"}
 
 
 @app.get("/status/{alert_id}", response_model=AlertStatusResponse)
 async def get_alert_status(alert_id: str) -> AlertStatusResponse:
     """Retrieve the current execution state for an alert."""
-    state = await _state_get(alert_id)
-    if state is None:
-        raise HTTPException(status_code=404, detail=f"Alert '{alert_id}' not found")
+    config = _make_config(alert_id)
 
-    return AlertStatusResponse(
-        alert_id=alert_id,
-        status=state.get("status", "unknown"),
-        current_node=state.get("current_node", ""),
-        retry_count=state.get("retry_count", 0),
-        error_log=list(state.get("error_log", [])),
-        reasoning_log=list(state.get("reasoning_log", [])),
-        metadata=dict(state.get("metadata", {})),
-        token_usage=list(state.get("token_usage", [])),
-        cost_estimate_usd=float(state.get("cost_estimate_usd", 0.0)),
-    )
-
-
-@app.post("/slack/interactive")
-async def slack_interactive(interaction: SlackInteraction) -> dict[str, Any]:
-    """Receive Slack approval/rejection and resume the paused graph."""
-    alert_id = interaction.alert_id
-    config = ALERT_CONFIGS.get(alert_id)
-
-    if config is None:
-        raise HTTPException(status_code=404, detail=f"Alert '{alert_id}' not found")
-
-    # Verify the graph is actually waiting at human_gate
+    # Prefer checkpointer state (most recent after graph runs)
     try:
-        snapshot = await _graph.aget_state(config)
+        snapshot = await _graph().aget_state(config)
+        if snapshot and snapshot.values:
+            state: SREState = snapshot.values  # type: ignore[assignment]
+            return AlertStatusResponse(
+                alert_id=alert_id,
+                status=state.get("status", "unknown"),
+                current_node=state.get("current_node", ""),
+                retry_count=state.get("retry_count", 0),
+                error_log=list(state.get("error_log", [])),
+                reasoning_log=list(state.get("reasoning_log", [])),
+                metadata=dict(state.get("metadata", {})),
+                token_usage=list(state.get("token_usage", [])),
+                cost_estimate_usd=float(state.get("cost_estimate_usd", 0.0)),
+            )
+    except Exception as exc:
+        logger.debug("aget_state failed for %s: %s", alert_id, exc)
+
+    # Fall back to initial state cache (alert submitted but graph not yet run)
+    initial = _INITIAL_STATES.get(alert_id)
+    if initial:
+        return AlertStatusResponse(
+            alert_id=alert_id,
+            status=initial.get("status", "accepted"),
+            current_node=initial.get("current_node", ""),
+            retry_count=initial.get("retry_count", 0),
+            error_log=list(initial.get("error_log", [])),
+            reasoning_log=list(initial.get("reasoning_log", [])),
+            metadata=dict(initial.get("metadata", {})),
+            token_usage=list(initial.get("token_usage", [])),
+            cost_estimate_usd=float(initial.get("cost_estimate_usd", 0.0)),
+        )
+
+    raise HTTPException(status_code=404, detail=f"Alert '{alert_id}' not found")
+
+
+@app.post("/slack/interactive", dependencies=[Depends(verify_slack_signature)])
+async def slack_interactive(request: Request) -> Any:
+    """Receive Slack approval/rejection and resume the paused graph.
+
+    Accepts two formats:
+      1. Real Slack interactive payload: application/x-www-form-urlencoded
+         with a ``payload`` field containing JSON (Block Kit button click).
+      2. Legacy JSON body: {"alert_id": "...", "approved": true/false}
+         (used by tests and direct API calls).
+
+    HMAC verification (when SLACK_SIGNING_SECRET is configured) is handled by
+    the slack_verify dependency on this route.
+    """
+    settings = _get_settings()
+    content_type = request.headers.get("content-type", "")
+
+    alert_id: str
+    approved: bool
+
+    if "application/x-www-form-urlencoded" in content_type:
+        # Real Slack interactive payload
+        form = await request.form()
+        raw_payload = form.get("payload", "")
+        if not raw_payload:
+            raise HTTPException(status_code=400, detail="Missing payload field")
+        try:
+            slack_data = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid payload JSON")
+
+        try:
+            interaction = SlackInteractionPayload.model_validate(slack_data)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        action = interaction.actions[0] if interaction.actions else None
+        if not action:
+            raise HTTPException(status_code=400, detail="No actions in payload")
+
+        # Button value encodes the alert_id; action_id encodes approve/reject
+        alert_id = action.value
+        approved = action.action_id.startswith("approve_")
+
+        # Acknowledge Slack immediately (must respond within 3s)
+        # The actual result will be posted via response_url asynchronously
+        response_url: str | None = interaction.response_url
+
+        async def _resume_and_notify():
+            result_status = await _resume_graph(alert_id, approved)
+            if response_url:
+                await _post_slack_response_url(response_url, alert_id, result_status)
+
+        asyncio.create_task(_resume_and_notify())
+        return Response(
+            content=json.dumps({"text": f"Processing {'approval' if approved else 'rejection'}..."}),
+            media_type="application/json",
+        )
+    else:
+        # Legacy JSON body (tests + direct API)
+        try:
+            body = await request.json()
+            interaction_legacy = SlackInteraction.model_validate(body)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        alert_id = interaction_legacy.alert_id
+        approved = interaction_legacy.approved
+
+        result_status = await _resume_graph(alert_id, approved)
+        return {"alert_id": alert_id, "status": result_status}
+
+
+async def _resume_graph(alert_id: str, approved: bool) -> str:
+    """Resume the paused graph with the given approval decision.
+
+    Returns the resulting status string.
+    Raises HTTPException on 404/409/500.
+    """
+    config = _make_config(alert_id)
+
+    try:
+        snapshot = await _graph().aget_state(config)
     except Exception:
         raise HTTPException(status_code=404, detail=f"No active graph state for '{alert_id}'")
 
-    if snapshot is None or not snapshot.next:
+    # Empty values + no next = thread never ran (alert not found)
+    if snapshot is None or (not snapshot.values and not snapshot.next):
+        raise HTTPException(status_code=404, detail=f"Alert '{alert_id}' not found")
+
+    if not snapshot.next:
         raise HTTPException(
             status_code=409,
             detail=f"Alert '{alert_id}' is not waiting for approval",
@@ -199,19 +322,51 @@ async def slack_interactive(interaction: SlackInteraction) -> dict[str, Any]:
         from langgraph.errors import GraphInterrupt
         from langgraph.types import Command
 
-        result = await _graph.ainvoke(
-            Command(resume={"approved": interaction.approved}),
+        result = await _graph().ainvoke(
+            Command(resume={"approved": approved}),
             config=config,
         )
-        await _state_set(alert_id, result)
-        return {"alert_id": alert_id, "status": result.get("status", "unknown")}
+        return result.get("status", "unknown")
 
     except GraphInterrupt:
         # Graph paused again (retry cycle)
-        snapshot = await _graph.aget_state(config)
-        if snapshot and snapshot.values:
-            await _state_set(alert_id, snapshot.values)  # type: ignore[arg-type]
-        return {"alert_id": alert_id, "status": "waiting_for_approval"}
+        return "waiting_for_approval"
 
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.error("Graph resume failed for alert %s: %s", alert_id, exc)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+_SLACK_RESPONSE_URL_PREFIX = "https://hooks.slack.com/"
+
+
+async def _post_slack_response_url(response_url: str, alert_id: str, status: str) -> None:
+    """Post the final result back to Slack via the response_url."""
+    if not response_url.startswith(_SLACK_RESPONSE_URL_PREFIX):
+        logger.warning(
+            "Rejecting response_url with unexpected domain for alert %s: %s",
+            alert_id,
+            response_url,
+        )
+        return
+    try:
+        import httpx
+        message = {
+            "replace_original": True,
+            "text": f"Alert `{alert_id}` — status: *{status}*",
+        }
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(response_url, json=message)
+    except Exception as exc:
+        logger.warning("Failed to post Slack response_url update: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Cost report endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/cost-report")
+async def get_cost_report() -> dict:
+    """Return aggregate cost breakdown across all processed alerts."""
+    from app.utils.cost_store import get_cost_report
+    return await get_cost_report()

@@ -9,14 +9,15 @@ Defines the stateful workflow:
     - retries after failed verification
 
 Checkpointing:
-  - Uses PostgresSaver when POSTGRES_DSN is set (Phase 2).
-  - Falls back to MemorySaver when POSTGRES_DSN is absent (Phase 1 compat).
+  - Accepts a checkpointer instance (AsyncPostgresSaver or MemorySaver).
+  - The caller (FastAPI lifespan) is responsible for initialising the checkpointer.
+  - Falls back to MemorySaver when no checkpointer is provided.
 """
 from __future__ import annotations
 
 import logging
-import os
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -91,46 +92,23 @@ def route_after_verification(state: SREState) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Checkpointer factory
-# ---------------------------------------------------------------------------
-
-def _build_checkpointer():
-    """Return PostgresSaver if POSTGRES_DSN is set, otherwise MemorySaver.
-
-    Note: AsyncPostgresSaver.from_conn_string() returns an async context manager
-    in modern langgraph versions. build_graph() is synchronous, so we fall back
-    to MemorySaver when the result cannot be used directly as a checkpointer.
-    """
-    dsn = os.environ.get("POSTGRES_DSN", "")
-    if dsn:
-        try:
-            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-            result = AsyncPostgresSaver.from_conn_string(dsn)
-            if hasattr(result, "__aenter__"):
-                logger.warning(
-                    "AsyncPostgresSaver.from_conn_string returned a context manager; "
-                    "build_graph() is synchronous — falling back to MemorySaver"
-                )
-            else:
-                logger.info("Using PostgresSaver for checkpointing (DSN configured)")
-                return result
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Failed to create PostgresSaver, falling back to MemorySaver: %s", exc
-            )
-    logger.info("Using MemorySaver for checkpointing (no POSTGRES_DSN)")
-    return MemorySaver()
-
-
-# ---------------------------------------------------------------------------
 # Graph builder
 # ---------------------------------------------------------------------------
 
-def build_graph() -> CompiledStateGraph:
+def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStateGraph:
     """Build and compile the SRE agent graph.
 
-    Uses PostgresSaver when POSTGRES_DSN is configured, MemorySaver otherwise.
+    Args:
+        checkpointer: An already-initialised checkpointer (e.g. AsyncPostgresSaver
+                      entered via its async context manager, or MemorySaver).
+                      Defaults to a new MemorySaver when None is provided.
     """
+    if checkpointer is None:
+        checkpointer = MemorySaver()
+        logger.info("build_graph: using MemorySaver (no checkpointer provided)")
+    else:
+        logger.info("build_graph: using %s", type(checkpointer).__name__)
+
     workflow = StateGraph(SREState)
 
     # Register nodes
@@ -189,5 +167,4 @@ def build_graph() -> CompiledStateGraph:
     )
     workflow.add_edge("escalate", END)
 
-    checkpointer = _build_checkpointer()
     return workflow.compile(checkpointer=checkpointer)

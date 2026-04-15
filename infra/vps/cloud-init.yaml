@@ -1,0 +1,96 @@
+#cloud-config
+# Cloud-Init template for the Autonomous SRE VPS (Hetzner/DigitalOcean).
+# Installs Docker, configures a systemd service to run the FastAPI container,
+# and enables automatic security updates.
+#
+# Pulumi renders this template with the actual values before passing it to the
+# server's user_data field.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - unattended-upgrades
+
+runcmd:
+  # Install Docker CE
+  - curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update -y
+  - apt-get install -y docker-ce docker-ce-cli containerd.io
+  - systemctl enable docker
+  - systemctl start docker
+
+  # Pull images
+  - docker pull redis:7-alpine
+  - docker pull ${image_name}
+
+  # Start Redis then the app
+  - systemctl daemon-reload
+  - systemctl enable autonomous-sre-redis
+  - systemctl start autonomous-sre-redis
+  - systemctl enable autonomous-sre
+  - systemctl start autonomous-sre
+
+write_files:
+  # Environment file for the app (values injected by Pulumi at deploy time)
+  - path: /etc/autonomous-sre.env
+    permissions: '0600'
+    content: |
+      ${env_file_content}
+
+  - path: /etc/systemd/system/autonomous-sre-redis.service
+    content: |
+      [Unit]
+      Description=Redis (autonomous-sre)
+      After=docker.service network-online.target
+      Requires=docker.service
+
+      [Service]
+      Restart=always
+      RestartSec=5
+      ExecStartPre=-/usr/bin/docker stop autonomous-sre-redis
+      ExecStartPre=-/usr/bin/docker rm autonomous-sre-redis
+      ExecStart=/usr/bin/docker run \
+        --name autonomous-sre-redis \
+        --rm \
+        --network host \
+        redis:7-alpine
+      ExecStop=/usr/bin/docker stop autonomous-sre-redis
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/autonomous-sre.service
+    content: |
+      [Unit]
+      Description=Autonomous SRE FastAPI Service
+      After=docker.service network-online.target autonomous-sre-redis.service
+      Requires=docker.service autonomous-sre-redis.service
+
+      [Service]
+      Restart=always
+      RestartSec=10
+      ExecStartPre=-/usr/bin/docker stop autonomous-sre
+      ExecStartPre=-/usr/bin/docker rm autonomous-sre
+      ExecStart=/usr/bin/docker run \
+        --name autonomous-sre \
+        --rm \
+        --network host \
+        --env-file /etc/autonomous-sre.env \
+        ${image_name}
+      ExecStop=/usr/bin/docker stop autonomous-sre
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";

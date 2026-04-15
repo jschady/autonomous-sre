@@ -121,7 +121,7 @@ async def _vector_search(query: str, limit: int = _DEFAULT_LIMIT) -> list[dict]:
 
     dsn = os.environ.get("POSTGRES_DSN", "")
     embedding = await _embed_query(query)
-    conn = await asyncpg.connect(dsn)
+    conn = await asyncpg.connect(dsn, statement_cache_size=0)
     try:
         return await _run_hybrid_query(conn, embedding, query, limit=limit)
     finally:

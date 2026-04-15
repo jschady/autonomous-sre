@@ -55,7 +55,7 @@ async def save_resolved_incident(dsn: str, state: dict) -> None:
     """
 
     try:
-        conn = await asyncpg.connect(dsn)
+        conn = await asyncpg.connect(dsn, statement_cache_size=0)
         try:
             await conn.execute(
                 sql,
@@ -113,7 +113,7 @@ async def fetch_similar_incidents(
     """
 
     try:
-        conn = await asyncpg.connect(dsn)
+        conn = await asyncpg.connect(dsn, statement_cache_size=0)
         try:
             rows = await conn.fetch(sql, json.dumps(embedding), limit)
             return [dict(row) for row in rows]
