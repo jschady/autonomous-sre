@@ -4,7 +4,6 @@ Endpoints:
   POST /webhook            — Receive Alertmanager webhook, start graph execution
   GET  /status/{alert_id}  — Retrieve current graph state for an alert
   POST /slack/interactive  — Receive Slack approval/rejection to resume graph
-  GET  /cost-report        — Aggregate cost breakdown across all alerts
 
 State persistence:
   - When POSTGRES_DSN is set: AsyncPostgresSaver (Supabase / Postgres) provides
@@ -748,13 +747,3 @@ async def _post_slack_response_url(
     except Exception as exc:
         logger.warning("Failed to post Slack response_url update: %s", exc)
 
-
-# ---------------------------------------------------------------------------
-# Cost report endpoint
-# ---------------------------------------------------------------------------
-
-@app.get("/cost-report")
-async def get_cost_report() -> dict:
-    """Return aggregate cost breakdown across all processed alerts."""
-    from app.utils.cost_store import get_cost_report
-    return await get_cost_report()

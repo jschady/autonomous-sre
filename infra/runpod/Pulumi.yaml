@@ -1,3 +1,0 @@
-name: autonomous-sre-gpu
-runtime: python
-description: RunPod GPU pod running vLLM for Autonomous SRE local inference

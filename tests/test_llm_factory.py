@@ -1,11 +1,11 @@
-"""Unit tests for app.utils.llm_factory — LLM client factory."""
+"""Unit tests for app.utils.llm_factory."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
-from app.utils.llm_factory import get_llm_client
+from app.utils.llm_factory import get_llm_client, ainvoke_with_fallback
 
 
 @pytest.fixture(autouse=True)
@@ -16,107 +16,63 @@ def clear_settings():
     clear_settings_cache()
 
 
-class TestGetLlmClientClaude:
-    """get_llm_client always returns Claude when local model is disabled."""
-
-    def test_returns_claude_when_local_disabled(self):
-        with patch("app.utils.llm_factory.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(
-                local_model_enabled=False,
-                runpod_base_url="https://example.runpod.net/v1",
-                triage_model="claude-sonnet-4-6",
-                anthropic_api_key="test-key",
-            )
-            with patch("app.utils.llm_factory._build_claude_client") as mock_claude:
-                mock_claude.return_value = MagicMock()
-                get_llm_client(provider="local")
-                mock_claude.assert_called_once()
-
-    def test_returns_claude_when_no_runpod_url(self):
-        with patch("app.utils.llm_factory.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(
-                local_model_enabled=True,
-                runpod_base_url="",
-                triage_model="claude-sonnet-4-6",
-                anthropic_api_key="test-key",
-            )
-            with patch("app.utils.llm_factory._build_claude_client") as mock_claude:
-                mock_claude.return_value = MagicMock()
-                get_llm_client(provider="local")
-                mock_claude.assert_called_once()
-
-    def test_returns_claude_for_unknown_provider(self):
-        with patch("app.utils.llm_factory.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(
-                local_model_enabled=True,
-                runpod_base_url="https://example.runpod.net/v1",
-                triage_model="claude-sonnet-4-6",
-                anthropic_api_key="test-key",
-            )
-            with patch("app.utils.llm_factory._build_claude_client") as mock_claude:
-                mock_claude.return_value = MagicMock()
-                get_llm_client(provider="claude")
-                mock_claude.assert_called_once()
-
-
-class TestGetLlmClientLocal:
-    """get_llm_client returns local model when enabled and URL is set."""
-
-    def test_returns_local_when_enabled(self):
-        mock_local = MagicMock()
+class TestGetLlmClient:
+    def test_returns_claude_client(self):
+        mock_client = MagicMock()
         with patch("app.utils.llm_factory.get_settings") as mock_settings, \
-             patch("app.utils.llm_factory._build_local_client", return_value=mock_local):
+             patch("app.utils.llm_factory._build_claude_client", return_value=mock_client):
             mock_settings.return_value = MagicMock(
-                local_model_enabled=True,
-                runpod_serverless_enabled=False,
-                runpod_serverless_endpoint_id="",
-                runpod_base_url="https://example.runpod.net/v1",
                 triage_model="claude-sonnet-4-6",
                 anthropic_api_key="test-key",
             )
-            result = get_llm_client(provider="local")
-            assert result is mock_local
+            result = get_llm_client()
+            assert result is mock_client
 
-    def test_falls_back_to_claude_when_local_build_fails(self):
-        mock_claude = MagicMock()
+    def test_passes_model_override(self):
         with patch("app.utils.llm_factory.get_settings") as mock_settings, \
-             patch("app.utils.llm_factory._build_local_client", return_value=None), \
-             patch("app.utils.llm_factory._build_claude_client", return_value=mock_claude):
+             patch("app.utils.llm_factory._build_claude_client") as mock_build:
             mock_settings.return_value = MagicMock(
-                local_model_enabled=True,
-                runpod_serverless_enabled=False,
-                runpod_serverless_endpoint_id="",
-                runpod_base_url="https://example.runpod.net/v1",
                 triage_model="claude-sonnet-4-6",
                 anthropic_api_key="test-key",
             )
-            result = get_llm_client(provider="local")
-            assert result is mock_claude
+            mock_build.return_value = MagicMock()
+            get_llm_client(model_override="claude-haiku-4-5-20251001")
+            _, kwargs_or_args = mock_build.call_args
+            # model_override is the second positional arg
+            assert mock_build.called
 
 
-class TestBuildLocalClient:
-    """_build_local_client handles import errors and connection failures."""
+class TestAinvokeWithFallback:
+    @pytest.mark.asyncio
+    async def test_invokes_claude_regardless_of_provider(self):
+        mock_response = MagicMock()
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(return_value=mock_response)
 
-    def test_returns_none_when_langchain_openai_missing(self):
-        from app.utils.llm_factory import _build_local_client
+        with patch("app.utils.llm_factory.get_settings") as mock_settings, \
+             patch("app.utils.llm_factory._build_claude_client", return_value=mock_client):
+            mock_settings.return_value = MagicMock(
+                triage_model="claude-sonnet-4-6",
+                anthropic_api_key="test-key",
+            )
+            result = await ainvoke_with_fallback(provider="local", messages=["hi"])
 
-        mock_settings = MagicMock(
-            runpod_base_url="https://example.runpod.net/v1",
-            runpod_api_key="test-key",
-            local_model_name="meta-llama/Llama-3.1-8B-Instruct",
-        )
-        with patch.dict("sys.modules", {"langchain_openai": None}):
-            result = _build_local_client(mock_settings)
-            assert result is None
+        assert result is mock_response
+        mock_client.ainvoke.assert_called_once_with(["hi"])
 
-    def test_returns_none_on_exception(self):
-        from app.utils.llm_factory import _build_local_client
+    @pytest.mark.asyncio
+    async def test_provider_arg_ignored(self):
+        """provider="claude" and provider="local" both call Claude."""
+        mock_response = MagicMock()
+        mock_client = MagicMock()
+        mock_client.ainvoke = AsyncMock(return_value=mock_response)
 
-        mock_settings = MagicMock(
-            runpod_base_url="https://example.runpod.net/v1",
-            runpod_api_key="test-key",
-            local_model_name="meta-llama/Llama-3.1-8B-Instruct",
-        )
-        with patch("langchain_openai.ChatOpenAI", side_effect=RuntimeError("boom")):
-            result = _build_local_client(mock_settings)
-            assert result is None
+        with patch("app.utils.llm_factory.get_settings") as mock_settings, \
+             patch("app.utils.llm_factory._build_claude_client", return_value=mock_client):
+            mock_settings.return_value = MagicMock(
+                triage_model="claude-sonnet-4-6",
+                anthropic_api_key="test-key",
+            )
+            for provider in ("claude", "local", "unknown"):
+                result = await ainvoke_with_fallback(provider=provider, messages=["msg"])
+                assert result is mock_response

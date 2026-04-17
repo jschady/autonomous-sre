@@ -35,19 +35,6 @@ _PRICE_PER_M: dict[str, dict[str, float]] = {
         "cache_write": 0.00,
         "cache_read": 0.00,
     },
-    # Local / self-hosted models — compute-cost estimate, not API billing
-    "meta-llama/Llama-3.1-8B-Instruct": {
-        "input": 0.10,
-        "output": 0.10,
-        "cache_write": 0.00,
-        "cache_read": 0.00,
-    },
-    "llama": {
-        "input": 0.10,
-        "output": 0.10,
-        "cache_write": 0.00,
-        "cache_read": 0.00,
-    },
 }
 _DEFAULT_PRICE: dict[str, float] = {
     "input": 3.00,

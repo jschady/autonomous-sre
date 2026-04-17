@@ -443,7 +443,7 @@ def build_remediation_message(
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f":white_check_mark: Action Completed",
+                    "text": ":white_check_mark: Action Completed",
                     "emoji": True,
                 },
             },

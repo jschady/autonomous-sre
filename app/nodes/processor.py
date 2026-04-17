@@ -1,13 +1,7 @@
 """Processor node — executes diagnostic tools and summarises findings.
 
 Takes tools_to_run from state, invokes each tool, aggregates raw output,
-then uses an LLM to produce a concise error_summary.
-
-Key Phase 3 changes:
-  - Uses Haiku (via settings.processor_model) to summarize logs before they
-    reach the researcher. This compresses 10MB log files into ~200-word summaries
-    that fit comfortably in Llama 8B's context window.
-  - Uses LLM factory (respects state["llm_provider"] set by router node).
+then uses Haiku (processor_model) to produce a concise error_summary.
 """
 from __future__ import annotations
 
@@ -77,10 +71,6 @@ async def processor_node(state: SREState) -> dict:
         raw_data_for_llm += "\n[... truncated for context window ...]"
 
     try:
-        # Processor ALWAYS uses Haiku for log summarization.
-        # This is a deliberate design choice: Haiku compresses large diagnostic
-        # data into a tight summary that fits in Llama 8B's 32K context window.
-        # The researcher node then uses the router's llm_provider selection.
         prompt_config = load_prompt("processor", settings.prompt_dir)
         prompt = render_prompt(
             prompt_config,

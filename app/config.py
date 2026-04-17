@@ -30,16 +30,10 @@ class Settings(BaseSettings):
     # Feature flags
     use_vector_db: str = "false"
 
-    # RunPod / Local inference (Phase 3A)
-    runpod_base_url: str = ""
-    runpod_api_key: str = ""
-    local_model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
-    local_model_enabled: bool = True
-
     # OpenAI (used for embeddings in semantic cache / incident store)
     openai_api_key: str = ""
 
-    # Semantic caching (Phase 3C)
+    # Semantic caching
     cache_similarity_threshold: float = 0.95
     cache_ttl_seconds: int = 86400
     semantic_cache_enabled: bool = False
@@ -57,21 +51,15 @@ class Settings(BaseSettings):
     prometheus_url: str = ""
     prometheus_enabled: bool = True
 
-    # Prompt directory (Phase 3D)
     prompt_dir: str = "prompts"
 
-    # Phase 4B: Slack (signing + bot token for Block Kit notifications)
+    # Slack (signing + bot token for Block Kit notifications)
     slack_signing_secret: str = ""
     slack_bot_token: str = ""
     slack_channel_id: str = ""
 
-    # Phase 4B: VPS / firewall
+    # VPS / firewall
     prometheus_server_ip: str = ""
-
-    # Phase 4C: RunPod Serverless
-    runpod_serverless_enabled: bool = False
-    runpod_serverless_endpoint_id: str = ""
-    runpod_cold_start_timeout: int = 300
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

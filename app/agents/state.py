@@ -45,9 +45,7 @@ class SREState(TypedDict):
     metrics_healthy: bool
     resolved: bool
 
-    # --- Phase 3: Routing & Caching ---
-    task_complexity: str   # "simple", "moderate", "complex" (set by triage)
-    llm_provider: str      # "claude" or "local" (set by router)
+    # --- Routing & Caching ---
     cache_hit: bool        # True if semantic cache matched
     cache_key: str         # Redis key of the cache hit
 
@@ -141,9 +139,7 @@ def create_initial_state(alert_payload: dict) -> SREState:
         # Verification
         metrics_healthy=False,
         resolved=False,
-        # Phase 3: Routing & Caching
-        task_complexity="moderate",
-        llm_provider="claude",
+        # Routing & Caching
         cache_hit=False,
         cache_key="",
         # LLMOps

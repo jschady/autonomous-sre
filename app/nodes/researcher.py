@@ -1,11 +1,4 @@
-"""Researcher node — searches SOPs and derives a recommended action.
-
-Phase 3 changes:
-  - Uses LLM factory: respects state["llm_provider"] (Claude or local Llama 8B).
-  - Injects up to 3 few-shot examples from resolved_incidents Postgres table.
-  - Examples are formatted as narrative "stories" (not JSON) for Llama performance.
-  - Uses YAML prompt file for versioned, externalized prompt management.
-"""
+"""Researcher node — searches SOPs and derives a recommended action."""
 from __future__ import annotations
 
 import logging
@@ -38,7 +31,6 @@ async def research_node(state: SREState) -> dict:
     payload = state["alert_payload"]
     error_summary = state.get("error_summary", "")
     triage_summary = state.get("triage_summary", "")
-    llm_provider = state.get("llm_provider", "claude")
 
     # Build search query from error context
     alertname = payload.get("alertname", "")
@@ -79,9 +71,9 @@ async def research_node(state: SREState) -> dict:
             few_shot_section=few_shot_section,
         )
         response = await ainvoke_with_fallback(
-            provider=llm_provider,
+            provider="claude",
             messages=[HumanMessage(content=prompt)],
-            model_override=settings.processor_model if llm_provider == "claude" else None,
+            model_override=settings.processor_model,
         )
         recommended_action = response.content.strip()
 
@@ -99,24 +91,12 @@ async def research_node(state: SREState) -> dict:
             "current_node": "researcher",
         }
 
-    # Determine effective model for cost tracking.
-    # For local provider, check response metadata to detect Claude fallback.
-    response_model = getattr(response, "response_metadata", {}).get("model_id", "")
-    if llm_provider == "local" and settings.local_model_enabled and not response_model:
-        effective_model = settings.local_model_name
-    elif llm_provider == "local":
-        # Local failed and fell back to Claude — response_model holds the Claude model id
-        effective_model = response_model or settings.triage_model
-    else:
-        effective_model = settings.processor_model
-
-    usage = extract_usage("researcher", effective_model, response)
+    usage = extract_usage("researcher", settings.processor_model, response)
     updated_token_usage = list(state.get("token_usage", [])) + [dict(usage)]
 
     sop_titles = [s["title"] for s in sop_matches]
     reasoning_entry = (
-        f"[researcher] provider={llm_provider} | "
-        f"sops_matched={sop_titles} | "
+        f"[researcher] sops_matched={sop_titles} | "
         f"few_shot={'yes' if few_shot_section else 'no'} | "
         f"recommended_action={recommended_action!r} | "
         f"tokens={usage['total_tokens']} cost=${usage['cost_usd']:.6f}"
