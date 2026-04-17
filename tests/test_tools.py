@@ -183,7 +183,7 @@ class TestQueryKnowledgeBase:
 class TestToolRegistry:
     def test_all_tools_is_list(self):
         assert isinstance(ALL_TOOLS, list)
-        assert len(ALL_TOOLS) == 5
+        assert len(ALL_TOOLS) == 9
 
     def test_tool_registry_is_dict(self):
         assert isinstance(TOOL_REGISTRY, dict)
@@ -201,6 +201,7 @@ class TestToolRegistry:
     def test_tool_registry_contains_all_expected_tools(self):
         expected = {
             "get_cluster_events",
+            "get_pod_resources",
             "fetch_container_logs",
             "get_system_metrics",
             "restart_service",

@@ -24,7 +24,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.state import SREState
 from app.nodes.action import action_node
-from app.nodes.human_gate import human_gate_node
+from app.nodes.human_gate import human_gate_node, notify_slack_node
 from app.nodes.processor import processor_node
 from app.nodes.researcher import research_node
 from app.nodes.router import router_node
@@ -63,17 +63,19 @@ def route_after_triage(state: SREState) -> str:
 def route_after_router(state: SREState) -> str:
     """Route based on semantic cache result.
 
-    - cache_hit=True  → human_gate (skip processor + researcher)
+    - cache_hit=True  → notify_slack (skip processor + researcher)
     - cache_hit=False → processor  (full analysis path)
     """
     if state.get("cache_hit"):
-        return "human_gate"
+        return "notify_slack"
     return "processor"
 
 
 def route_after_action(state: SREState) -> str:
-    """Route to escalate if RBAC blocked the action, otherwise to verification."""
+    """Route to escalate if RBAC blocked or human rejected, otherwise to verification."""
     if state.get("rbac_blocked"):
+        return "escalate"
+    if state.get("status") == "escalated":
         return "escalate"
     return "verification"
 
@@ -116,6 +118,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStat
     workflow.add_node("router", router_node)
     workflow.add_node("processor", processor_node)
     workflow.add_node("researcher", research_node)
+    workflow.add_node("notify_slack", notify_slack_node)
     workflow.add_node("human_gate", human_gate_node)
     workflow.add_node("action", action_node)
     workflow.add_node("verification", verification_node)
@@ -134,18 +137,19 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStat
         },
     )
 
-    # router → processor (full path) or human_gate (cache hit)
+    # router → processor (full path) or notify_slack (cache hit, skips processor+researcher)
     workflow.add_conditional_edges(
         "router",
         route_after_router,
         {
             "processor": "processor",
-            "human_gate": "human_gate",
+            "notify_slack": "notify_slack",
         },
     )
 
     workflow.add_edge("processor", "researcher")
-    workflow.add_edge("researcher", "human_gate")
+    workflow.add_edge("researcher", "notify_slack")
+    workflow.add_edge("notify_slack", "human_gate")
     workflow.add_edge("human_gate", "action")
 
     workflow.add_conditional_edges(

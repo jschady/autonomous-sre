@@ -20,3 +20,21 @@ template: |
 
   State the recommended action clearly in 1-2 sentences.
   If no SOPs match, recommend "Manual investigation by on-call engineer".
+
+  If the action involves scaling memory (OOMKilled / OOM), include the appropriate
+  memory parameters in your response:
+
+  When memory_limit is a real value (e.g. memory_limit=128.0Mi):
+    Include `factor=X.X` — the multiplier to apply to the current limit.
+    - If memory_used and memory_limit are available: target = memory_used * 1.3,
+      factor = target / memory_limit (minimum 1.2, maximum 4.0).
+    - If only a percentage: 88-95% → factor=1.5, 95-100% → factor=2.0.
+    - For a confirmed OOMKill with no usage data: factor=2.0.
+    IMPORTANT: Do NOT calculate or state the absolute target value in Mi/Gi.
+    The scaling tool computes the new limit from live data. Only output the factor token.
+    Example: "Scale memory with factor=1.5 to provide headroom above peak usage."
+
+  When memory_limit=N/A (no limit configured):
+    Include `initial_limit=XXXMi` — the first limit to set, based on memory_used * 1.3
+    rounded up to the nearest 64Mi (minimum 128Mi, maximum 2Gi).
+    Example: "Set initial memory limit with initial_limit=192Mi based on observed usage."

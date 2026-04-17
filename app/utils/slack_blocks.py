@@ -79,6 +79,7 @@ def build_approval_message(
     error_summary: str,
     triage_summary: str,
     proposed_action: str,
+    prior_attempt: str | None = None,
 ) -> dict:
     """Return a Slack Block Kit payload for the human approval gate.
 
@@ -95,95 +96,383 @@ def build_approval_message(
 
     analysis = _md_to_mrkdwn(error_summary or triage_summary or "_No analysis available_")
     action = _md_to_mrkdwn(proposed_action or "_No action proposed_")
+    # Plain truncated text for the confirm dialog (plain_text type, no mrkdwn overhead)
+    confirm_action = _trunc(proposed_action or "No action proposed", 260)
+
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": _trunc(f"{severity_emoji}  Alert: {alertname}", _HEADER_MAX),
+                "emoji": True,
+            },
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Severity:*\n{severity.upper()}",
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Alert ID:*\n`{alert_id}`",
+                },
+            ],
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": _trunc(f"*:mag: Analysis*\n{analysis}", _SECTION_MAX),
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": _trunc(f"*:wrench: Recommended Action*\n{action}", _SECTION_MAX),
+            },
+        },
+    ]
+
+    if prior_attempt:
+        prior_text = _md_to_mrkdwn(prior_attempt)
+        blocks.append({"type": "divider"})
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": _trunc(f"*:warning: Previous Attempt Result*\n{prior_text}", _SECTION_MAX),
+                },
+            }
+        )
+
+    blocks.append({"type": "divider"})
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Approve", "emoji": True},
+                    "style": "primary",
+                    "action_id": f"approve_{alert_id}",
+                    "value": alert_id,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": "Confirm Approval"},
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"Execute: {confirm_action}?",
+                        },
+                        "confirm": {"type": "plain_text", "text": "Yes, execute"},
+                        "deny": {"type": "plain_text", "text": "Cancel"},
+                    },
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Reject", "emoji": True},
+                    "style": "danger",
+                    "action_id": f"reject_{alert_id}",
+                    "value": alert_id,
+                },
+            ],
+        }
+    )
 
     return {
         "text": f"[{severity.upper()}] {alertname} — approval required",
+        "blocks": blocks,
+    }
+
+
+def build_working_message(alert_id: str, approved: bool) -> dict:
+    """Return a Slack Block Kit payload that replaces the approval buttons immediately.
+
+    Sent as the synchronous HTTP response to the button click so Slack removes
+    the [Approve]/[Reject] buttons before the background graph run finishes.
+    Must include ``replace_original: true`` so Slack swaps the original message.
+    """
+    if approved:
+        status_line = ":hourglass_flowing_sand:  *Approved — agent is executing the action...*"
+    else:
+        status_line = ":hourglass_flowing_sand:  *Rejected — escalating to on-call team...*"
+
+    return {
+        "replace_original": True,
+        "text": "Agent is working on it...",
         "blocks": [
             {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": _trunc(f"{severity_emoji}  Alert: {alertname}", _HEADER_MAX),
-                    "emoji": True,
-                },
-            },
-            {
                 "type": "section",
-                "fields": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Severity:*\n{severity.upper()}",
-                    },
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Alert ID:*\n`{alert_id}`",
-                    },
-                ],
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": _trunc(f"*:mag: Analysis*\n{analysis}", _SECTION_MAX),
-                },
+                "text": {"type": "mrkdwn", "text": status_line},
             },
             {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": _trunc(f"*:wrench: Recommended Action*\n{action}", _SECTION_MAX),
-                },
-            },
-            {"type": "divider"},
-            {
-                "type": "actions",
+                "type": "context",
                 "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Approve", "emoji": True},
-                        "style": "primary",
-                        "action_id": f"approve_{alert_id}",
-                        "value": alert_id,
-                        "confirm": {
-                            "title": {"type": "plain_text", "text": "Confirm Approval"},
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": _trunc(f"Execute: _{action}_?", 300),
-                            },
-                            "confirm": {"type": "plain_text", "text": "Yes, execute"},
-                            "deny": {"type": "plain_text", "text": "Cancel"},
-                        },
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Reject", "emoji": True},
-                        "style": "danger",
-                        "action_id": f"reject_{alert_id}",
-                        "value": alert_id,
-                    },
+                    {"type": "mrkdwn", "text": f"Alert ID: `{alert_id}`"},
                 ],
             },
         ],
     }
 
 
-def build_resolution_message(alert_id: str, status: str, action_result: str = "") -> dict:
-    """Return a Slack Block Kit payload announcing the resolution outcome."""
-    status_emoji = ":white_check_mark:" if status == "resolved" else ":x:"
-    result_text = _md_to_mrkdwn(action_result) if action_result else ""
+def build_rejected_message(alert_id: str, alertname: str, error_summary: str) -> dict:
+    """Return a Slack Block Kit payload for a human-rejected alert.
+
+    Replaces the approval message with a concise ❌ notice and removes buttons.
+    Must include ``replace_original: true`` so Slack swaps the original message.
+    """
+    summary = _trunc(_md_to_mrkdwn(error_summary or "No details available"), _SECTION_MAX)
     return {
-        "text": f"{status_emoji} Alert `{alert_id}` — {status}",
+        "replace_original": True,
+        "text": f":x: {alertname} — rejected",
         "blocks": [
             {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": (
-                        f"{status_emoji} *Alert `{alert_id}` {status}*"
-                        + (f"\n{result_text}" if result_text else "")
-                    ),
+                    "text": f":x:  *{alertname}* — rejected by operator\n{summary}",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"Alert ID: `{alert_id}`"},
+                ],
+            },
+        ],
+    }
+
+
+def build_success_summary_message(
+    alert_id: str,
+    alertname: str,
+    error_summary: str,
+    action_result: str,
+) -> dict:
+    """Return a Slack Block Kit payload summarising a resolved incident.
+
+    Posted as a *new* message after all incident-related messages are deleted.
+    Does NOT include ``replace_original`` — this is a fresh post, not a replacement.
+    """
+    summary = _trunc(error_summary or "Alert resolved", _SECTION_MAX)
+    result_text = _trunc(_md_to_mrkdwn(action_result) if action_result else "No details", _SECTION_MAX)
+    return {
+        "text": f":white_check_mark: Resolved: {alertname}",
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": _trunc(f":white_check_mark:  Resolved: {alertname}", _HEADER_MAX),
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Issue:* {summary}"},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Steps taken:*\n{result_text}"},
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"Alert ID: `{alert_id}`"},
+                ],
+            },
+        ],
+    }
+
+
+def build_failed_message(
+    alert_id: str,
+    alertname: str,
+    error_summary: str,
+    action_result: str,
+    proposed_action: str = "",
+) -> dict:
+    """Return a Slack Block Kit payload for a failed remediation attempt.
+
+    Shows the error, any actions that were attempted, and Approve/Reject buttons
+    so the operator can retry or escalate.
+    """
+    error_text = _trunc(_md_to_mrkdwn(error_summary or "Remediation failed"), _SECTION_MAX)
+
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": _trunc(f":x:  Failed: {alertname}", _HEADER_MAX),
+                "emoji": True,
+            },
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Error:*\n{error_text}"},
+        },
+    ]
+
+    if action_result:
+        prior_text = _trunc(_md_to_mrkdwn(action_result), _SECTION_MAX)
+        blocks.append({"type": "divider"})
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Actions attempted:*\n{prior_text}",
                 },
             }
+        )
+
+    blocks.append({"type": "divider"})
+    blocks.append(
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"Alert ID: `{alert_id}`"},
+            ],
+        }
+    )
+
+    confirm_action = _trunc(proposed_action or action_result or "Retry the action", 260)
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Retry", "emoji": True},
+                    "style": "primary",
+                    "action_id": f"approve_{alert_id}",
+                    "value": alert_id,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": "Confirm Retry"},
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"Retry: {confirm_action}?",
+                        },
+                        "confirm": {"type": "plain_text", "text": "Yes, retry"},
+                        "deny": {"type": "plain_text", "text": "Cancel"},
+                    },
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Escalate", "emoji": True},
+                    "style": "danger",
+                    "action_id": f"reject_{alert_id}",
+                    "value": alert_id,
+                },
+            ],
+        }
+    )
+
+    return {
+        "replace_original": True,
+        "text": f":x: Failed: {alertname}",
+        "blocks": blocks,
+    }
+
+
+def build_resolution_message(alert_id: str, status: str, action_result: str = "") -> dict:
+    """Return a Slack Block Kit payload announcing the resolution outcome."""
+    if status == "resolved":
+        status_emoji = ":white_check_mark:"
+    elif status == "rejected":
+        status_emoji = ":warning:"
+    elif status == "waiting_for_approval":
+        status_emoji = ":arrows_counterclockwise:"
+    elif status == "escalated":
+        status_emoji = ":warning:"
+    elif status == "in_progress":
+        status_emoji = ":hourglass_flowing_sand:"
+    else:
+        status_emoji = ":warning:"
+
+    result_text = _md_to_mrkdwn(action_result) if action_result else ""
+
+    blocks: list[dict] = [
+        {"type": "divider"},
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": _trunc(f"{status_emoji}  Alert {alert_id} — {status.upper()}", _HEADER_MAX),
+                "emoji": True,
+            },
+        },
+    ]
+
+    if result_text:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": _trunc(result_text, _SECTION_MAX)},
+            }
+        )
+
+    return {
+        "text": f"{status_emoji} Alert `{alert_id}` — {status}",
+        "blocks": blocks,
+    }
+
+
+def build_remediation_message(
+    alert_id: str,
+    alertname: str,
+    action_result: str,
+    error_msg: str = "Failed to update Slack message",
+) -> dict:
+    """Return a Slack message explaining what was done and how to verify.
+
+    Used when the automated update fails but the action succeeded.
+    Shows what was executed and provides manual verification steps.
+    """
+    result_text = _md_to_mrkdwn(action_result) if action_result else "No action details available"
+
+    return {
+        "text": f":warning: {alertname} — Action completed (message update failed)",
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f":white_check_mark: Action Completed",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Alert:* {alertname}\n*Status:* ✅ Remediation applied successfully",
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*What was done:*\n{_trunc(result_text, _SECTION_MAX)}",
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Next steps:*\n1. Check the resource status in your cluster\n2. Verify metrics are healthy (error rate, latency, pod restarts)\n3. Close this alert if the issue is resolved",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"Alert ID: `{alert_id}` | {error_msg}"},
+                ],
+            },
         ],
     }

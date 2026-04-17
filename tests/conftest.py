@@ -11,6 +11,9 @@ from httpx import AsyncClient, ASGITransport
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
 os.environ.setdefault("LANGSMITH_TRACING", "false")
 
+# Skip the post-action verification delay in tests (default is 30s)
+os.environ.setdefault("VERIFICATION_DELAY_SECONDS", "0")
+
 import app.tools.k8s_tools as k8s_tools
 from app.tools.k8s_tools import EXECUTED_ACTIONS
 
@@ -63,9 +66,15 @@ def mock_k8s_apis():
     mock_core.list_namespaced_event.return_value = MagicMock(items=[])
     mock_core.read_namespaced_pod_log.side_effect = _log_side_effect
 
-    with patch("app.tools.k8s_tools._get_apps_v1", return_value=mock_apps):
-        with patch("app.tools.k8s_tools._get_core_v1", return_value=mock_core):
-            yield mock_apps, mock_core
+    with (
+        patch("app.tools.k8s_helpers.get_apps_v1", return_value=mock_apps),
+        patch("app.tools.k8s_helpers.get_core_v1", return_value=mock_core),
+        patch("app.tools.k8s_read_tools.get_core_v1", return_value=mock_core),
+        patch("app.tools.k8s_action_tools.get_apps_v1", return_value=mock_apps),
+        patch("app.tools.k8s_action_tools.get_core_v1", return_value=mock_core),
+        patch("app.nodes.verification.get_core_v1", return_value=mock_core),
+    ):
+        yield mock_apps, mock_core
 
 
 @pytest.fixture

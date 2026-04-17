@@ -1,7 +1,10 @@
 """SREState schema and factory for the Autonomous SRE agent graph."""
+import logging
 import os
 import uuid
 from typing import Optional, TypedDict
+
+logger = logging.getLogger(__name__)
 
 
 class SREState(TypedDict):
@@ -23,12 +26,20 @@ class SREState(TypedDict):
     sop_matches: list[dict]
     recommended_action: str
 
+    # --- Processor Output (also used by action/verification) ---
+    workload: str  # Deployment/workload name derived from pod label (e.g. "chaos-app")
+
     # --- Action Output ---
     proposed_action: str
     human_approved: bool
     action_result: str
     rbac_blocked: bool  # True if k8s action was denied due to RBAC
     k8s_error: Optional[str]  # Raw k8s API error for reasoning log
+
+    # --- Slack Thread Tracking ---
+    slack_message_ts: Optional[str]   # ts of the last posted approval message
+    slack_channel: Optional[str]      # channel of the last posted approval message
+    slack_message_ts_list: list[str]  # all approval message ts values (for bulk delete on resolution)
 
     # --- Verification Output ---
     metrics_healthy: bool
@@ -57,16 +68,32 @@ _MAX_RETRIES_HARD_CAP = 5
 _DEFAULT_MAX_RETRIES = 3
 
 
+_PROMETHEUS_INTERNAL_LABELS = {"job", "instance"}
+
+
 def _extract_metadata(alert_payload: dict) -> dict:
-    """Extract structured metadata from webhook labels."""
+    """Extract structured metadata from webhook labels.
+
+    Prometheus-internal labels (job, instance) are excluded — they describe
+    the scrape target, not the alerting workload, and confuse LLM reasoning.
+    """
     labels = alert_payload.get("labels", {})
     standard_keys = {"region", "env", "cluster_id", "namespace"}
+    excluded = standard_keys | _PROMETHEUS_INTERNAL_LABELS
+    namespace = labels.get("namespace")
+    if namespace is None:
+        logger.warning(
+            "alert_payload missing 'namespace' label (alertname=%r); "
+            "defaulting to 'default' — all K8s tool calls will target the default namespace",
+            alert_payload.get("alertname", "unknown"),
+        )
+        namespace = "default"
     metadata = {
         "region": labels.get("region", "unknown"),
         "env": labels.get("env", "unknown"),
         "cluster_id": labels.get("cluster_id", "unknown"),
-        "namespace": labels.get("namespace", "default"),
-        **{k: v for k, v in labels.items() if k not in standard_keys},
+        "namespace": namespace,
+        **{k: v for k, v in labels.items() if k not in excluded},
     }
     return metadata
 
@@ -97,6 +124,7 @@ def create_initial_state(alert_payload: dict) -> SREState:
         # Processor
         raw_logs="",
         error_summary="",
+        workload="",
         # Research
         sop_matches=[],
         recommended_action="",
@@ -106,6 +134,10 @@ def create_initial_state(alert_payload: dict) -> SREState:
         action_result="",
         rbac_blocked=False,
         k8s_error=None,
+        # Slack thread tracking
+        slack_message_ts=None,
+        slack_channel=None,
+        slack_message_ts_list=[],
         # Verification
         metrics_healthy=False,
         resolved=False,

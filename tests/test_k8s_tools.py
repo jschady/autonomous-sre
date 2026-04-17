@@ -124,7 +124,7 @@ class TestGetClusterEventsReal:
         mock_list = MagicMock()
         mock_list.items = [mock_event]
 
-        with patch("app.tools.k8s_tools._get_core_v1") as mock_core:
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
             mock_core.return_value.list_namespaced_event.return_value = mock_list
             from app.tools.k8s_tools import get_cluster_events
             result = get_cluster_events.invoke({"namespace": "default", "service": "web"})
@@ -138,7 +138,7 @@ class TestGetClusterEventsReal:
         mock_list = MagicMock()
         mock_list.items = [mock_event, mock_irrelevant]
 
-        with patch("app.tools.k8s_tools._get_core_v1") as mock_core:
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
             mock_core.return_value.list_namespaced_event.return_value = mock_list
             from app.tools.k8s_tools import get_cluster_events
             result = get_cluster_events.invoke({"namespace": "default", "service": "web-api"})
@@ -150,7 +150,7 @@ class TestGetClusterEventsReal:
         mock_list = MagicMock()
         mock_list.items = []
 
-        with patch("app.tools.k8s_tools._get_core_v1") as mock_core:
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
             mock_core.return_value.list_namespaced_event.return_value = mock_list
             from app.tools.k8s_tools import get_cluster_events
             result = get_cluster_events.invoke({"namespace": "default", "service": "web"})
@@ -161,7 +161,7 @@ class TestGetClusterEventsReal:
     def test_get_cluster_events_handles_api_exception(self):
         from kubernetes.client.exceptions import ApiException
 
-        with patch("app.tools.k8s_tools._get_core_v1") as mock_core:
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
             mock_core.return_value.list_namespaced_event.side_effect = ApiException(
                 status=500, reason="Internal Server Error"
             )
@@ -174,7 +174,7 @@ class TestGetClusterEventsReal:
     def test_get_cluster_events_rbac_403_returns_rbac_error(self):
         from kubernetes.client.exceptions import ApiException
 
-        with patch("app.tools.k8s_tools._get_core_v1") as mock_core:
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
             exc = ApiException(status=403, reason="Forbidden")
             exc.status = 403
             mock_core.return_value.list_namespaced_event.side_effect = exc
@@ -193,7 +193,7 @@ class TestGetClusterEventsReal:
 
 class TestFetchContainerLogsReal:
     def test_fetch_container_logs_returns_string(self):
-        with patch("app.tools.k8s_tools._get_core_v1") as mock_core:
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
             mock_core.return_value.read_namespaced_pod_log.return_value = (
                 "INFO starting\nERROR failed\n"
             )
@@ -204,7 +204,7 @@ class TestFetchContainerLogsReal:
         assert "INFO starting" in result or isinstance(result, str)
 
     def test_fetch_container_logs_passes_tail_lines(self):
-        with patch("app.tools.k8s_tools._get_core_v1") as mock_core:
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
             mock_core.return_value.read_namespaced_pod_log.return_value = "line1\nline2\n"
             from app.tools.k8s_tools import fetch_container_logs
             fetch_container_logs.invoke(
@@ -217,7 +217,7 @@ class TestFetchContainerLogsReal:
     def test_fetch_container_logs_handles_api_exception(self):
         from kubernetes.client.exceptions import ApiException
 
-        with patch("app.tools.k8s_tools._get_core_v1") as mock_core:
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
             mock_core.return_value.read_namespaced_pod_log.side_effect = ApiException(
                 status=404, reason="Not Found"
             )
@@ -230,7 +230,7 @@ class TestFetchContainerLogsReal:
     def test_fetch_container_logs_rbac_returns_forbidden_message(self):
         from kubernetes.client.exceptions import ApiException
 
-        with patch("app.tools.k8s_tools._get_core_v1") as mock_core:
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
             exc = ApiException(status=403, reason="Forbidden")
             exc.status = 403
             mock_core.return_value.read_namespaced_pod_log.side_effect = exc
@@ -246,13 +246,20 @@ class TestFetchContainerLogsReal:
 # ---------------------------------------------------------------------------
 
 
+def _patch_apps(mock_apps):
+    """Patch get_apps_v1 in both helpers (find_controller) and action_tools (restart/rollback/scale)."""
+    return (
+        patch("app.tools.k8s_helpers.get_apps_v1", mock_apps),
+        patch("app.tools.k8s_action_tools.get_apps_v1", mock_apps),
+    )
+
+
 class TestRestartServiceReal:
     def test_restart_service_calls_patch_deployment(self):
-        mock_patch_result = MagicMock()
-        mock_patch_result.metadata.name = "checkout-api"
+        mock_apps = MagicMock()
 
-        with patch("app.tools.k8s_tools._get_apps_v1") as mock_apps:
-            mock_apps.return_value.patch_namespaced_deployment.return_value = mock_patch_result
+        with patch("app.tools.k8s_helpers.get_apps_v1", mock_apps), \
+             patch("app.tools.k8s_action_tools.get_apps_v1", mock_apps):
             from app.tools.k8s_tools import restart_service
             result = restart_service.invoke({"service_id": "checkout-api"})
 
@@ -262,24 +269,29 @@ class TestRestartServiceReal:
     def test_restart_service_rbac_403_returns_rbac_blocked_dict(self):
         from kubernetes.client.exceptions import ApiException
 
-        with patch("app.tools.k8s_tools._get_apps_v1") as mock_apps:
-            exc = ApiException(status=403, reason="Forbidden")
-            exc.status = 403
-            mock_apps.return_value.patch_namespaced_deployment.side_effect = exc
+        mock_apps = MagicMock()
+        exc = ApiException(status=403, reason="Forbidden")
+        exc.status = 403
+        mock_apps.return_value.patch_namespaced_deployment.side_effect = exc
+
+        with patch("app.tools.k8s_helpers.get_apps_v1", mock_apps), \
+             patch("app.tools.k8s_action_tools.get_apps_v1", mock_apps):
             from app.tools.k8s_tools import restart_service
             result = restart_service.invoke({"service_id": "checkout-api"})
 
-        # RBAC error should be surfaced clearly
         assert isinstance(result, str)
         assert "rbac" in result.lower() or "forbidden" in result.lower() or "denied" in result.lower()
 
     def test_restart_service_non_rbac_api_error_returns_error_message(self):
         from kubernetes.client.exceptions import ApiException
 
-        with patch("app.tools.k8s_tools._get_apps_v1") as mock_apps:
-            mock_apps.return_value.patch_namespaced_deployment.side_effect = ApiException(
-                status=500, reason="Internal Server Error"
-            )
+        mock_apps = MagicMock()
+        mock_apps.return_value.patch_namespaced_deployment.side_effect = ApiException(
+            status=500, reason="Internal Server Error"
+        )
+
+        with patch("app.tools.k8s_helpers.get_apps_v1", mock_apps), \
+             patch("app.tools.k8s_action_tools.get_apps_v1", mock_apps):
             from app.tools.k8s_tools import restart_service
             result = restart_service.invoke({"service_id": "checkout-api"})
 
@@ -294,8 +306,10 @@ class TestRestartServiceReal:
 
 class TestExecuteRollbackReal:
     def test_execute_rollback_calls_create_namespaced_deployment_rollback(self):
-        with patch("app.tools.k8s_tools._get_apps_v1") as mock_apps:
-            mock_apps.return_value.patch_namespaced_deployment.return_value = MagicMock()
+        mock_apps = MagicMock()
+
+        with patch("app.tools.k8s_helpers.get_apps_v1", mock_apps), \
+             patch("app.tools.k8s_action_tools.get_apps_v1", mock_apps):
             from app.tools.k8s_tools import execute_rollback
             result = execute_rollback.invoke({"deployment_name": "checkout-v2"})
 
@@ -305,10 +319,13 @@ class TestExecuteRollbackReal:
     def test_execute_rollback_rbac_403_returns_rbac_message(self):
         from kubernetes.client.exceptions import ApiException
 
-        with patch("app.tools.k8s_tools._get_apps_v1") as mock_apps:
-            exc = ApiException(status=403, reason="Forbidden")
-            exc.status = 403
-            mock_apps.return_value.patch_namespaced_deployment.side_effect = exc
+        mock_apps = MagicMock()
+        exc = ApiException(status=403, reason="Forbidden")
+        exc.status = 403
+        mock_apps.return_value.patch_namespaced_deployment.side_effect = exc
+
+        with patch("app.tools.k8s_helpers.get_apps_v1", mock_apps), \
+             patch("app.tools.k8s_action_tools.get_apps_v1", mock_apps):
             from app.tools.k8s_tools import execute_rollback
             result = execute_rollback.invoke({"deployment_name": "checkout-v2"})
 
@@ -318,10 +335,13 @@ class TestExecuteRollbackReal:
     def test_execute_rollback_api_error_returns_error_message(self):
         from kubernetes.client.exceptions import ApiException
 
-        with patch("app.tools.k8s_tools._get_apps_v1") as mock_apps:
-            mock_apps.return_value.patch_namespaced_deployment.side_effect = ApiException(
-                status=500, reason="Internal Server Error"
-            )
+        mock_apps = MagicMock()
+        mock_apps.return_value.patch_namespaced_deployment.side_effect = ApiException(
+            status=500, reason="Internal Server Error"
+        )
+
+        with patch("app.tools.k8s_helpers.get_apps_v1", mock_apps), \
+             patch("app.tools.k8s_action_tools.get_apps_v1", mock_apps):
             from app.tools.k8s_tools import execute_rollback
             result = execute_rollback.invoke({"deployment_name": "checkout-v2"})
 
@@ -361,12 +381,13 @@ class TestRbacBlockedInActionNode:
         from app.nodes.action import action_node
         from kubernetes.client.exceptions import ApiException
 
+        mock_apps = MagicMock()
         exc = ApiException(status=403, reason="Forbidden")
         exc.status = 403
+        mock_apps.return_value.patch_namespaced_deployment.side_effect = exc
 
-        with patch("app.tools.k8s_tools._get_apps_v1") as mock_apps:
-            mock_apps.return_value.patch_namespaced_deployment.side_effect = exc
-
+        with patch("app.tools.k8s_helpers.get_apps_v1", mock_apps), \
+             patch("app.tools.k8s_action_tools.get_apps_v1", mock_apps):
             state = {
                 "human_approved": True,
                 "recommended_action": "restart",
@@ -386,9 +407,10 @@ class TestRbacBlockedInActionNode:
     async def test_action_node_does_not_set_rbac_blocked_on_success(self):
         from app.nodes.action import action_node
 
-        with patch("app.tools.k8s_tools._get_apps_v1") as mock_apps:
-            mock_apps.return_value.patch_namespaced_deployment.return_value = MagicMock()
+        mock_apps = MagicMock()
 
+        with patch("app.tools.k8s_helpers.get_apps_v1", mock_apps), \
+             patch("app.tools.k8s_action_tools.get_apps_v1", mock_apps):
             state = {
                 "human_approved": True,
                 "recommended_action": "restart",
@@ -435,3 +457,143 @@ class TestGraphRbacRouting:
             "status": "in_progress",
         }
         assert route_after_action(state) == "verification"
+
+
+# ---------------------------------------------------------------------------
+# Real k8s tool: get_pod_resources (mocked API)
+# ---------------------------------------------------------------------------
+
+
+class TestGetPodResources:
+    def _make_container(self, name: str, memory_limit: str | None, memory_request: str | None):
+        container = MagicMock()
+        container.name = name
+        container.resources = MagicMock()
+        container.resources.limits = {"memory": memory_limit} if memory_limit else {}
+        container.resources.requests = {"memory": memory_request} if memory_request else {}
+        return container
+
+    def test_returns_formatted_string(self):
+        container = self._make_container("app", "128Mi", "64Mi")
+        pod = MagicMock()
+        pod.spec.containers = [container]
+
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
+            mock_core.return_value.read_namespaced_pod.return_value = pod
+            from app.tools.k8s_read_tools import get_pod_resources
+            result = get_pod_resources.invoke({"pod_id": "default/oom-test"})
+
+        assert "memory_limit: 128Mi" in result
+        assert "memory_request: 64Mi" in result
+        assert "app" in result
+
+    def test_no_limit_shows_na(self):
+        container = self._make_container("stress", None, None)
+        pod = MagicMock()
+        pod.spec.containers = [container]
+
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
+            mock_core.return_value.read_namespaced_pod.return_value = pod
+            from app.tools.k8s_read_tools import get_pod_resources
+            result = get_pod_resources.invoke({"pod_id": "default/oom-test"})
+
+        assert "memory_limit: N/A" in result
+
+    def test_pod_not_found_returns_error(self):
+        from kubernetes.client.exceptions import ApiException
+
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
+            exc = ApiException(status=404, reason="Not Found")
+            exc.status = 404
+            mock_core.return_value.read_namespaced_pod.side_effect = exc
+            from app.tools.k8s_read_tools import get_pod_resources
+            result = get_pod_resources.invoke({"pod_id": "default/missing-pod"})
+
+        assert "[ERROR]" in result
+        assert "not found" in result.lower()
+
+    def test_rbac_403_returns_rbac_error(self):
+        from kubernetes.client.exceptions import ApiException
+
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
+            exc = ApiException(status=403, reason="Forbidden")
+            exc.status = 403
+            mock_core.return_value.read_namespaced_pod.side_effect = exc
+            from app.tools.k8s_read_tools import get_pod_resources
+            result = get_pod_resources.invoke({"pod_id": "default/oom-test"})
+
+        assert "rbac" in result.lower() or "denied" in result.lower()
+
+    def test_multiple_containers_all_listed(self):
+        c1 = self._make_container("app", "256Mi", "128Mi")
+        c2 = self._make_container("sidecar", "64Mi", None)
+        pod = MagicMock()
+        pod.spec.containers = [c1, c2]
+
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
+            mock_core.return_value.read_namespaced_pod.return_value = pod
+            from app.tools.k8s_read_tools import get_pod_resources
+            result = get_pod_resources.invoke({"pod_id": "default/multi"})
+
+        assert "app" in result
+        assert "sidecar" in result
+        assert "256Mi" in result
+        assert "64Mi" in result
+
+    def test_bare_pod_id_defaults_to_default_namespace(self):
+        pod = MagicMock()
+        pod.spec.containers = []
+
+        with patch("app.tools.k8s_read_tools.get_core_v1") as mock_core:
+            mock_core.return_value.read_namespaced_pod.return_value = pod
+            from app.tools.k8s_read_tools import get_pod_resources
+            get_pod_resources.invoke({"pod_id": "oom-test"})
+            # Should call with namespace="default"
+            mock_core.return_value.read_namespaced_pod.assert_called_once_with(
+                name="oom-test", namespace="default"
+            )
+
+
+# ---------------------------------------------------------------------------
+# processor: _extract_memory_limit_tag
+# ---------------------------------------------------------------------------
+
+
+class TestExtractMemoryLimitTag:
+    def test_extracts_limit_from_get_pod_resources_output(self):
+        from app.nodes.processor import _extract_memory_limit_tag
+        raw_parts = [
+            "[get_pod_resources]\n[Resources in pod=oom-test]\nContainer 'stress':\n  memory_limit: 50Mi\n  memory_request: N/A"
+        ]
+        result = _extract_memory_limit_tag(raw_parts)
+        assert result == "memory_limit=50Mi"
+
+    def test_returns_na_when_no_limit_set(self):
+        from app.nodes.processor import _extract_memory_limit_tag
+        raw_parts = [
+            "[get_pod_resources]\n[Resources in pod=oom-test]\nContainer 'app':\n  memory_limit: N/A\n  memory_request: N/A"
+        ]
+        result = _extract_memory_limit_tag(raw_parts)
+        assert result == "memory_limit=N/A"
+
+    def test_returns_none_when_no_resource_section(self):
+        from app.nodes.processor import _extract_memory_limit_tag
+        raw_parts = [
+            "[get_cluster_events]\nsome events here",
+            "[fetch_container_logs]\nsome logs here",
+        ]
+        result = _extract_memory_limit_tag(raw_parts)
+        assert result is None
+
+    def test_ignores_other_tool_output(self):
+        from app.nodes.processor import _extract_memory_limit_tag
+        raw_parts = [
+            "[get_cluster_events]\nmemory_limit: 100Mi (this is in the wrong section)",
+            "[get_pod_resources]\nContainer 'app':\n  memory_limit: 200Mi",
+        ]
+        result = _extract_memory_limit_tag(raw_parts)
+        assert result == "memory_limit=200Mi"
+
+    def test_empty_raw_parts(self):
+        from app.nodes.processor import _extract_memory_limit_tag
+        assert _extract_memory_limit_tag([]) is None

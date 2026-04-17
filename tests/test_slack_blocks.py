@@ -7,7 +7,16 @@ import time
 
 import pytest
 
-from app.utils.slack_blocks import _md_to_mrkdwn, build_approval_message, build_resolution_message
+from app.utils.slack_blocks import (
+    _md_to_mrkdwn,
+    build_approval_message,
+    build_failed_message,
+    build_remediation_message,
+    build_rejected_message,
+    build_resolution_message,
+    build_success_summary_message,
+    build_working_message,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +205,32 @@ class TestBuildApprovalMessage:
         header = next(b for b in msg["blocks"] if b.get("type") == "header")
         assert ":red_circle:" in header["text"]["text"]
 
+    def test_prior_attempt_section_included_when_provided(self):
+        msg = build_approval_message(
+            alert_id="a1",
+            alertname="X",
+            severity="warning",
+            error_summary="",
+            triage_summary="",
+            proposed_action="restart",
+            prior_attempt="Rolling restart applied but pods still crashing.",
+        )
+        text = str(msg)
+        assert "Previous Attempt" in text
+        assert "Rolling restart applied" in text
+
+    def test_no_prior_attempt_section_when_not_provided(self):
+        msg = build_approval_message(
+            alert_id="a1",
+            alertname="X",
+            severity="warning",
+            error_summary="",
+            triage_summary="",
+            proposed_action="restart",
+        )
+        text = str(msg)
+        assert "Previous Attempt" not in text
+
 
 # ---------------------------------------------------------------------------
 # build_resolution_message
@@ -211,13 +246,49 @@ class TestBuildResolutionMessage:
         msg = build_resolution_message("alert-1", "resolved")
         assert ":white_check_mark:" in msg["text"]
 
-    def test_non_resolved_uses_x_emoji(self):
+    def test_escalated_uses_warning_emoji(self):
         msg = build_resolution_message("alert-1", "escalated")
-        assert ":x:" in msg["text"]
+        assert ":warning:" in msg["text"]
 
     def test_alert_id_in_text(self):
         msg = build_resolution_message("my-alert-id", "resolved")
         assert "my-alert-id" in msg["text"]
+
+
+# ---------------------------------------------------------------------------
+# build_working_message
+# ---------------------------------------------------------------------------
+
+class TestBuildWorkingMessage:
+    def test_approved_mentions_executing(self):
+        msg = build_working_message("alert-1", approved=True)
+        text = str(msg)
+        assert "executing" in text.lower() or "approved" in text.lower()
+
+    def test_rejected_mentions_escalating(self):
+        msg = build_working_message("alert-1", approved=False)
+        text = str(msg)
+        assert "escalat" in text.lower() or "rejected" in text.lower()
+
+    def test_replace_original_is_true(self):
+        msg = build_working_message("alert-1", approved=True)
+        assert msg.get("replace_original") is True
+
+    def test_has_blocks(self):
+        msg = build_working_message("alert-1", approved=True)
+        assert "blocks" in msg
+        assert len(msg["blocks"]) > 0
+
+    def test_no_actions_block(self):
+        """Buttons must be absent so they disappear when this message replaces the original."""
+        msg = build_working_message("alert-1", approved=True)
+        action_blocks = [b for b in msg["blocks"] if b.get("type") == "actions"]
+        assert action_blocks == []
+
+    def test_alert_id_in_blocks(self):
+        msg = build_working_message("my-alert-99", approved=True)
+        text = str(msg)
+        assert "my-alert-99" in text
 
 
 # ---------------------------------------------------------------------------
@@ -281,3 +352,235 @@ class TestHMACVerification:
     def test_current_timestamp_accepted(self):
         current_ts = int(time.time())
         assert abs(time.time() - current_ts) <= 5
+
+
+# ---------------------------------------------------------------------------
+# build_rejected_message
+# ---------------------------------------------------------------------------
+
+class TestBuildRejectedMessage:
+    def test_returns_dict_with_blocks(self):
+        msg = build_rejected_message(
+            alert_id="alert-123",
+            alertname="PodCrashLooping",
+            error_summary="Pod crash looping in checkout",
+        )
+        assert isinstance(msg, dict)
+        assert "blocks" in msg
+        assert len(msg["blocks"]) > 0
+
+    def test_contains_x_emoji(self):
+        msg = build_rejected_message("a1", "PodCrashLooping", "DB connection refused")
+        text = str(msg)
+        assert ":x:" in text
+
+    def test_no_action_buttons(self):
+        msg = build_rejected_message("a1", "PodCrashLooping", "OOM killed")
+        action_blocks = [b for b in msg["blocks"] if b.get("type") == "actions"]
+        assert action_blocks == []
+
+    def test_replace_original_is_true(self):
+        msg = build_rejected_message("a1", "SomeAlert", "Some error")
+        assert msg.get("replace_original") is True
+
+    def test_contains_alertname(self):
+        msg = build_rejected_message("a1", "HighMemoryUsage", "Memory usage critical")
+        text = str(msg)
+        assert "HighMemoryUsage" in text
+
+    def test_contains_error_summary(self):
+        msg = build_rejected_message("a1", "TestAlert", "DB connection refused")
+        text = str(msg)
+        assert "DB connection refused" in text
+
+    def test_contains_alert_id(self):
+        msg = build_rejected_message("my-alert-id-999", "TestAlert", "error")
+        text = str(msg)
+        assert "my-alert-id-999" in text
+
+    def test_markdown_converted_in_error_summary(self):
+        """**bold** in error_summary should be rendered as *bold* (mrkdwn)."""
+        msg = build_rejected_message("a1", "Alert", "**Critical failure** in checkout")
+        text = str(msg)
+        # mrkdwn bold (*), not markdown bold (**)
+        assert "*Critical failure*" in text
+        assert "**Critical failure**" not in text
+
+
+# ---------------------------------------------------------------------------
+# build_success_summary_message
+# ---------------------------------------------------------------------------
+
+class TestBuildSuccessSummaryMessage:
+    def test_returns_dict_with_blocks(self):
+        msg = build_success_summary_message(
+            alert_id="alert-123",
+            alertname="PodCrashLooping",
+            error_summary="Pod crash looping in checkout",
+            action_result="Rolling restart applied successfully",
+        )
+        assert isinstance(msg, dict)
+        assert "blocks" in msg
+        assert len(msg["blocks"]) > 0
+
+    def test_contains_check_emoji(self):
+        msg = build_success_summary_message("a1", "PodCrashLooping", "OOM", "Restarted")
+        text = str(msg)
+        assert ":white_check_mark:" in text
+
+    def test_no_action_buttons(self):
+        msg = build_success_summary_message("a1", "PodCrashLooping", "OOM", "Restarted")
+        action_blocks = [b for b in msg["blocks"] if b.get("type") == "actions"]
+        assert action_blocks == []
+
+    def test_no_replace_original(self):
+        """Success summary is a new message, not a replacement."""
+        msg = build_success_summary_message("a1", "PodCrashLooping", "OOM", "Restarted")
+        assert "replace_original" not in msg
+
+    def test_contains_alertname(self):
+        msg = build_success_summary_message("a1", "CriticalAlert", "desc", "fix")
+        text = str(msg)
+        assert "CriticalAlert" in text
+
+    def test_contains_action_result(self):
+        msg = build_success_summary_message("a1", "A", "desc", "Rolling restart applied")
+        text = str(msg)
+        assert "Rolling restart" in text
+
+    def test_contains_alert_id(self):
+        msg = build_success_summary_message("my-alert-abc", "A", "desc", "fix")
+        text = str(msg)
+        assert "my-alert-abc" in text
+
+
+# ---------------------------------------------------------------------------
+# build_failed_message
+# ---------------------------------------------------------------------------
+
+class TestBuildFailedMessage:
+    def test_returns_dict_with_blocks(self):
+        msg = build_failed_message(
+            alert_id="alert-123",
+            alertname="PodCrashLooping",
+            error_summary="Connection refused",
+            action_result="kubectl rollout restart deployment/checkout-api",
+        )
+        assert isinstance(msg, dict)
+        assert "blocks" in msg
+        assert len(msg["blocks"]) > 0
+
+    def test_contains_x_emoji_in_header(self):
+        msg = build_failed_message("a1", "SomeAlert", "error", "action")
+        text = str(msg)
+        assert ":x:" in text
+
+    def test_contains_alertname(self):
+        msg = build_failed_message("a1", "HighMemoryUsage", "OOM", "scale up")
+        text = str(msg)
+        assert "HighMemoryUsage" in text
+
+    def test_contains_error_summary(self):
+        msg = build_failed_message("a1", "Alert", "DB connection refused", "restart")
+        text = str(msg)
+        assert "DB connection refused" in text
+
+    def test_contains_action_result_when_provided(self):
+        msg = build_failed_message("a1", "Alert", "error", "Rolling restart applied")
+        text = str(msg)
+        assert "Rolling restart applied" in text
+
+    def test_actions_section_absent_when_no_action_result(self):
+        msg = build_failed_message("a1", "Alert", "error", "")
+        text = str(msg)
+        assert "Actions attempted" not in text
+
+    def test_actions_section_present_when_action_result_provided(self):
+        msg = build_failed_message("a1", "Alert", "error", "tried restart")
+        text = str(msg)
+        assert "Actions attempted" in text
+
+    def test_contains_alert_id(self):
+        msg = build_failed_message("my-alert-xyz", "Alert", "error", "action")
+        text = str(msg)
+        assert "my-alert-xyz" in text
+
+    def test_replace_original_is_true(self):
+        msg = build_failed_message("a1", "Alert", "error", "action")
+        assert msg.get("replace_original") is True
+
+    def test_has_retry_and_escalate_buttons(self):
+        msg = build_failed_message("a1", "Alert", "error", "action")
+        action_blocks = [b for b in msg["blocks"] if b.get("type") == "actions"]
+        assert len(action_blocks) == 1
+        elements = action_blocks[0]["elements"]
+        action_ids = [e["action_id"] for e in elements]
+        assert "approve_a1" in action_ids
+        assert "reject_a1" in action_ids
+
+    def test_retry_button_is_primary_style(self):
+        msg = build_failed_message("a1", "Alert", "error", "action")
+        action_blocks = [b for b in msg["blocks"] if b.get("type") == "actions"]
+        elements = action_blocks[0]["elements"]
+        retry_btn = next(e for e in elements if e["action_id"].startswith("approve_"))
+        assert retry_btn.get("style") == "primary"
+
+    def test_escalate_button_is_danger_style(self):
+        msg = build_failed_message("a1", "Alert", "error", "action")
+        action_blocks = [b for b in msg["blocks"] if b.get("type") == "actions"]
+        elements = action_blocks[0]["elements"]
+        escalate_btn = next(e for e in elements if e["action_id"].startswith("reject_"))
+        assert escalate_btn.get("style") == "danger"
+
+    def test_markdown_converted_in_error_summary(self):
+        msg = build_failed_message("a1", "Alert", "**Critical failure** in checkout", "action")
+        text = str(msg)
+        assert "*Critical failure*" in text
+        assert "**Critical failure**" not in text
+
+
+# ---------------------------------------------------------------------------
+# build_remediation_message
+# ---------------------------------------------------------------------------
+
+class TestBuildRemediationMessage:
+    def test_returns_dict_with_blocks(self):
+        msg = build_remediation_message(
+            alert_id="alert-123",
+            alertname="PodCrashLooping",
+            action_result="Restarted pod successfully",
+        )
+        assert isinstance(msg, dict)
+        assert "blocks" in msg
+        assert len(msg["blocks"]) > 0
+
+    def test_contains_check_emoji_for_completion(self):
+        msg = build_remediation_message("a1", "Alert", "Action done")
+        text = str(msg)
+        assert ":white_check_mark:" in text
+
+    def test_contains_action_result(self):
+        msg = build_remediation_message("a1", "OOMAlert", "Scaled memory limit from 100Mi to 200Mi")
+        text = str(msg)
+        assert "Scaled memory" in text
+
+    def test_contains_verification_steps(self):
+        msg = build_remediation_message("a1", "Alert", "Action completed")
+        text = str(msg)
+        # Should mention manual verification steps
+        assert "Check the resource status" in text or "metrics" in text.lower() or "verify" in text.lower()
+
+    def test_contains_alert_id(self):
+        msg = build_remediation_message("my-special-id", "Alert", "Done")
+        text = str(msg)
+        assert "my-special-id" in text
+
+    def test_custom_error_message(self):
+        msg = build_remediation_message("a1", "Alert", "Result", error_msg="Custom failure reason")
+        text = str(msg)
+        assert "Custom failure reason" in text
+
+    def test_no_action_buttons(self):
+        msg = build_remediation_message("a1", "Alert", "Result")
+        action_blocks = [b for b in msg["blocks"] if b.get("type") == "actions"]
+        assert action_blocks == []
