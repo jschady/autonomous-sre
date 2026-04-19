@@ -83,8 +83,7 @@ class TestGraphStructure:
         from app.agents.graph import build_graph
         from langgraph.checkpoint.memory import MemorySaver
 
-        with patch("app.agents.graph._build_checkpointer", return_value=MemorySaver()):
-            graph = build_graph()
+        graph = build_graph(checkpointer=MemorySaver())
 
         node_names = list(graph.nodes.keys())
         assert "router" in node_names
@@ -111,7 +110,7 @@ class TestGraphStructure:
         from app.agents.graph import route_after_router
 
         cache_hit_state = {"cache_hit": True}
-        assert route_after_router(cache_hit_state) == "human_gate"  # type: ignore[arg-type]
+        assert route_after_router(cache_hit_state) == "notify_slack"  # type: ignore[arg-type]
 
         cache_miss_state = {"cache_hit": False}
         assert route_after_router(cache_miss_state) == "processor"  # type: ignore[arg-type]

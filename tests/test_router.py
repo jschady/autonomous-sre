@@ -28,7 +28,7 @@ class TestRouterNode:
     async def test_cache_disabled_returns_base_update(self):
         state = _make_state(triage_summary="OOMKilled in checkout")
         with patch("app.nodes.router.get_settings") as mock_settings:
-            mock_settings.return_value = type("S", (), {"semantic_cache_enabled": False})()
+            mock_settings.return_value = type("S", (), {"postgres_dsn": None})()
             result = await router_node(state)
 
         assert result["cache_hit"] is False
@@ -45,8 +45,7 @@ class TestRouterNode:
                  "cache_key": "cache:incident:abc",
              }):
             mock_settings.return_value = type("S", (), {
-                "semantic_cache_enabled": True,
-                "redis_url": "redis://localhost:6379",
+                "postgres_dsn": "postgresql://localhost/sre",
                 "cache_similarity_threshold": 0.95,
             })()
             result = await router_node(state)
@@ -62,8 +61,7 @@ class TestRouterNode:
         with patch("app.nodes.router.get_settings") as mock_settings, \
              patch("app.nodes.router._check_cache", return_value=None):
             mock_settings.return_value = type("S", (), {
-                "semantic_cache_enabled": True,
-                "redis_url": "redis://localhost:6379",
+                "postgres_dsn": "postgresql://localhost/sre",
                 "cache_similarity_threshold": 0.95,
             })()
             result = await router_node(state)
@@ -75,7 +73,7 @@ class TestRouterNode:
     async def test_adds_reasoning_log_entry(self):
         state = _make_state(reasoning_log=["[triage] test"])
         with patch("app.nodes.router.get_settings") as mock_settings:
-            mock_settings.return_value = type("S", (), {"semantic_cache_enabled": False})()
+            mock_settings.return_value = type("S", (), {"postgres_dsn": None})()
             result = await router_node(state)
 
         assert len(result["reasoning_log"]) == 2
@@ -87,7 +85,7 @@ class TestRouterNode:
         state = _make_state(triage_summary="")
         with patch("app.nodes.router.get_settings") as mock_settings, \
              patch("app.nodes.router._check_cache") as mock_check:
-            mock_settings.return_value = type("S", (), {"semantic_cache_enabled": True})()
+            mock_settings.return_value = type("S", (), {"postgres_dsn": "postgresql://localhost/sre"})()
             await router_node(state)
 
         mock_check.assert_not_called()

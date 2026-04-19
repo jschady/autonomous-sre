@@ -1,8 +1,7 @@
-"""Router node — checks semantic cache before processing.
+"""Router node — checks pgvector cache before processing.
 
-If a similar past incident is found in the cache, short-circuits directly
-to human_gate with the cached recommended action, skipping processor and
-researcher.
+If a similar past incident is found in resolved_incidents, short-circuits
+directly to human_gate with the cached recommended action.
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 @traceable(name="router_node", metadata={"phase": "routing"})
 async def router_node(state: SREState) -> dict:
-    """Check semantic cache. On a hit, populate recommended_action and short-circuit."""
+    """Check pgvector cache. On a hit, populate recommended_action and short-circuit."""
     settings = get_settings()
     error_summary = state.get("triage_summary", "")
 
@@ -29,7 +28,7 @@ async def router_node(state: SREState) -> dict:
         "current_node": "router",
     }
 
-    if settings.semantic_cache_enabled and error_summary:
+    if error_summary and settings.postgres_dsn:
         cache_result = await _check_cache(settings, error_summary)
         if cache_result is not None:
             recommended = cache_result.get("recommended_action", "")
@@ -49,16 +48,15 @@ async def router_node(state: SREState) -> dict:
 
 
 async def _check_cache(settings, error_summary: str) -> dict | None:
-    """Check semantic cache and return cached entry if found."""
+    """Check pgvector cache and return cached entry if found."""
     try:
-        from app.utils.semantic_cache import cache_lookup
+        from app.utils.incident_store import cache_lookup
 
-        result = await cache_lookup(
-            redis_url=settings.redis_url,
+        return await cache_lookup(
+            dsn=settings.postgres_dsn,
             error_summary=error_summary,
             threshold=settings.cache_similarity_threshold,
         )
-        return result
     except Exception as exc:
         logger.warning("Cache check failed (non-critical): %s", exc)
         return None
