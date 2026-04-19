@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.utils.incident_store import fetch_similar_incidents, save_resolved_incident
+from app.utils.incident_store import cache_lookup, fetch_similar_incidents, save_resolved_incident
 
 
 def _make_state(**overrides) -> dict:
@@ -101,3 +101,88 @@ class TestFetchSimilarIncidents:
                 error_summary="OOMKilled",
             )
         assert result == []
+
+
+class TestCacheLookup:
+    @pytest.mark.asyncio
+    async def test_cache_lookup_hit(self):
+        """Returns dict with recommended_action when nearest row similarity >= threshold."""
+        fake_row = {
+            "recommended_action": "restart the pod",
+            "error_summary": "OOMKilled in namespace default",
+            "similarity": 0.97,
+        }
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value=fake_row)
+        mock_conn.close = AsyncMock()
+
+        with patch("app.utils.incident_store._embed_text", return_value=[0.1] * 1536), \
+             patch("asyncpg.connect", return_value=mock_conn):
+            result = await cache_lookup("postgresql://test", "OOMKilled pod crashing", threshold=0.90)
+
+        assert result is not None
+        assert result["recommended_action"] == "restart the pod"
+        mock_conn.fetchrow.assert_called_once()
+        sql_arg = mock_conn.fetchrow.call_args.args[0]
+        assert "resolved_incidents" in sql_arg
+        assert "<=>" in sql_arg
+
+    @pytest.mark.asyncio
+    async def test_cache_lookup_miss_below_threshold(self):
+        """Returns None when nearest row similarity < threshold."""
+        fake_row = {
+            "recommended_action": "restart the pod",
+            "error_summary": "OOMKilled in namespace default",
+            "similarity": 0.80,
+        }
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value=fake_row)
+        mock_conn.close = AsyncMock()
+
+        with patch("app.utils.incident_store._embed_text", return_value=[0.1] * 1536), \
+             patch("asyncpg.connect", return_value=mock_conn):
+            result = await cache_lookup("postgresql://test", "high CPU on worker node", threshold=0.95)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_cache_lookup_no_rows_in_db(self):
+        """Returns None when fetchrow returns None (empty table)."""
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value=None)
+        mock_conn.close = AsyncMock()
+
+        with patch("app.utils.incident_store._embed_text", return_value=[0.1] * 1536), \
+             patch("asyncpg.connect", return_value=mock_conn):
+            result = await cache_lookup("postgresql://test", "OOMKilled pod crashing")
+
+        assert result is None
+        mock_conn.fetchrow.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cache_lookup_empty_dsn(self):
+        """Returns None immediately when dsn is empty — no DB call made."""
+        with patch("asyncpg.connect") as mock_connect:
+            result = await cache_lookup("", "OOMKilled pod crashing")
+
+        assert result is None
+        mock_connect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_lookup_embedding_failure(self):
+        """Returns None when _embed_text returns empty list."""
+        with patch("app.utils.incident_store._embed_text", return_value=[]), \
+             patch("asyncpg.connect") as mock_connect:
+            result = await cache_lookup("postgresql://test", "OOMKilled pod crashing")
+
+        assert result is None
+        mock_connect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cache_lookup_db_error(self):
+        """Returns None when asyncpg raises."""
+        with patch("app.utils.incident_store._embed_text", return_value=[0.1] * 1536), \
+             patch("asyncpg.connect", side_effect=Exception("connection refused")):
+            result = await cache_lookup("postgresql://test", "OOMKilled pod crashing")
+
+        assert result is None

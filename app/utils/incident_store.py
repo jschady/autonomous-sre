@@ -124,6 +124,52 @@ async def fetch_similar_incidents(
         return []
 
 
+async def cache_lookup(
+    dsn: str,
+    error_summary: str,
+    threshold: float = 0.95,
+) -> dict | None:
+    """Return the nearest resolved incident if cosine similarity >= threshold.
+
+    Uses the ivfflat index on resolved_incidents.embedding for O(log n) lookup.
+    Returns None on empty dsn, embedding failure, no match above threshold, or any error.
+    """
+    if not dsn or not error_summary:
+        return None
+
+    embedding = await _embed_text(error_summary)
+    if not embedding:
+        return None
+
+    sql = """
+        SELECT recommended_action, error_summary,
+               1 - (embedding <=> $1::vector) AS similarity
+        FROM resolved_incidents
+        WHERE embedding IS NOT NULL
+        ORDER BY embedding <=> $1::vector
+        LIMIT 1;
+    """
+
+    try:
+        import asyncpg  # type: ignore[import-untyped]
+    except ImportError:
+        logger.warning("asyncpg not installed — cache_lookup disabled")
+        return None
+
+    try:
+        conn = await asyncpg.connect(dsn, statement_cache_size=0)
+        try:
+            row = await conn.fetchrow(sql, json.dumps(embedding))
+            if row is None or row["similarity"] < threshold:
+                return None
+            return dict(row)
+        finally:
+            await conn.close()
+    except Exception as exc:
+        logger.warning("cache_lookup error (non-critical): %s", exc)
+        return None
+
+
 async def _embed_text(text: str) -> list[float]:
     """Embed text using OpenAI text-embedding-3-small. Returns [] on failure."""
     if not text:
