@@ -139,37 +139,15 @@ def _check_pod_stable(workload: str, namespace: str) -> tuple[bool, str]:
 
 
 async def _persist_resolution(state: dict) -> None:
-    """Fire-and-forget: save to incident_store + semantic cache. Swallows all errors."""
+    """Fire-and-forget: save to incident_store. Swallows all errors."""
     dsn = os.environ.get("POSTGRES_DSN", "")
-    redis_url = os.environ.get("REDIS_URL", "")
 
-    error_summary = state.get("triage_summary", "")
-    recommended_action = state.get("recommended_action", "")
-
-    # Save to Postgres resolved_incidents table
     if dsn:
         try:
             from app.utils.incident_store import save_resolved_incident
             await save_resolved_incident(dsn, state)
         except Exception as exc:
             logger.warning("Failed to save resolved incident (non-critical): %s", exc)
-
-    # Store in semantic cache for future fast-path
-    if redis_url and error_summary and recommended_action:
-        try:
-            from app.config import get_settings
-            from app.utils.semantic_cache import cache_store
-
-            settings = get_settings()
-            if settings.semantic_cache_enabled:
-                await cache_store(
-                    redis_url=redis_url,
-                    error_summary=error_summary,
-                    recommended_action=recommended_action,
-                    ttl_seconds=settings.cache_ttl_seconds,
-                )
-        except Exception as exc:
-            logger.warning("Failed to store in semantic cache (non-critical): %s", exc)
 
 
 def _is_healthy(metrics_str: str) -> bool:
