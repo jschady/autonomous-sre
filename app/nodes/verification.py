@@ -143,7 +143,7 @@ async def _persist_resolution(state: dict) -> None:
     dsn = os.environ.get("POSTGRES_DSN", "")
     redis_url = os.environ.get("REDIS_URL", "")
 
-    error_summary = state.get("error_summary", "")
+    error_summary = state.get("triage_summary", "")
     recommended_action = state.get("recommended_action", "")
 
     # Save to Postgres resolved_incidents table

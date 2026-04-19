@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 async def router_node(state: SREState) -> dict:
     """Check semantic cache. On a hit, populate recommended_action and short-circuit."""
     settings = get_settings()
-    error_summary = state.get("error_summary", "")
+    error_summary = state.get("triage_summary", "")
 
     base_update: dict = {
         "cache_hit": False,

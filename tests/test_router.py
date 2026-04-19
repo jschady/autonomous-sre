@@ -14,7 +14,7 @@ def _make_state(**overrides) -> dict:
         "metadata": {"namespace": "checkout"},
         "cache_hit": False,
         "cache_key": "",
-        "error_summary": "",
+        "triage_summary": "",
         "reasoning_log": [],
         "current_node": "triage",
     }
@@ -26,7 +26,7 @@ class TestRouterNode:
 
     @pytest.mark.asyncio
     async def test_cache_disabled_returns_base_update(self):
-        state = _make_state(error_summary="OOMKilled in checkout")
+        state = _make_state(triage_summary="OOMKilled in checkout")
         with patch("app.nodes.router.get_settings") as mock_settings:
             mock_settings.return_value = type("S", (), {"semantic_cache_enabled": False})()
             result = await router_node(state)
@@ -36,7 +36,7 @@ class TestRouterNode:
 
     @pytest.mark.asyncio
     async def test_cache_hit_returns_recommended_action(self):
-        state = _make_state(error_summary="OOMKilled in checkout")
+        state = _make_state(triage_summary="OOMKilled in checkout")
         cached_action = "Increase memory limit to 1Gi"
 
         with patch("app.nodes.router.get_settings") as mock_settings, \
@@ -58,7 +58,7 @@ class TestRouterNode:
 
     @pytest.mark.asyncio
     async def test_cache_miss_does_not_set_recommended_action(self):
-        state = _make_state(error_summary="Pod crash looping")
+        state = _make_state(triage_summary="Pod crash looping")
         with patch("app.nodes.router.get_settings") as mock_settings, \
              patch("app.nodes.router._check_cache", return_value=None):
             mock_settings.return_value = type("S", (), {
@@ -82,9 +82,9 @@ class TestRouterNode:
         assert "[router]" in result["reasoning_log"][-1]
 
     @pytest.mark.asyncio
-    async def test_no_cache_check_when_error_summary_empty(self):
-        """Cache is not queried when error_summary is empty."""
-        state = _make_state(error_summary="")
+    async def test_no_cache_check_when_triage_summary_empty(self):
+        """Cache is not queried when triage_summary is empty."""
+        state = _make_state(triage_summary="")
         with patch("app.nodes.router.get_settings") as mock_settings, \
              patch("app.nodes.router._check_cache") as mock_check:
             mock_settings.return_value = type("S", (), {"semantic_cache_enabled": True})()

@@ -42,6 +42,9 @@ SERVER_TYPE: str = config.get("serverType") or "cx23"
 LOCATION: str = config.get("location") or "nbg1"
 # Restrict SSH to your IP: pulumi config set allowedSshCidr "1.2.3.4/32"
 ALLOWED_SSH_CIDR: str = config.get("allowedSshCidr") or os.environ.get("ALLOWED_SSH_CIDR", "")
+TAILSCALE_AUTH_KEY: pulumi.Output[str] = pulumi.Output.from_input(
+    config.get_secret("tailscaleAuthKey") or os.environ.get("TAILSCALE_AUTH_KEY", "")
+)
 
 _image_tag = config.get("imageTag") or "latest"
 IMAGE_NAME = (
@@ -94,22 +97,22 @@ app_image = docker.Image(
 # Step 2: Cloud-Init user data
 # ---------------------------------------------------------------------------
 
-def _render_cloud_init(image_name: str) -> str:
+def _render_cloud_init(image_name: str, tailscale_auth_key: str) -> str:
     template_path = os.path.join(os.path.dirname(__file__), "cloud-init.yaml")
     with open(template_path) as f:
         template = f.read()
-    # Indent each env line by 6 spaces to sit inside the write_files content block scalar.
     indented_env = "\n".join(f"      {line}" for line in ENV_FILE_CONTENT.splitlines())
     return (
         template
         .replace("${image_name}", image_name)
         .replace("      ${env_file_content}", indented_env)
+        .replace("${tailscale_auth_key}", tailscale_auth_key)
     )
 
 
-# Render cloud-init once the image name is known (it's a plain string here,
-# but we depend on app_image so Pulumi waits for the push to finish first).
-user_data = app_image.image_name.apply(_render_cloud_init)
+user_data = pulumi.Output.all(app_image.image_name, TAILSCALE_AUTH_KEY).apply(
+    lambda args: _render_cloud_init(args[0], args[1])
+)
 
 # ---------------------------------------------------------------------------
 # Step 3: Firewall
