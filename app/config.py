@@ -24,9 +24,6 @@ class Settings(BaseSettings):
     # Postgres (pgvector + checkpoint)
     postgres_dsn: str = ""
 
-    # Redis (alert state store)
-    redis_url: str = "redis://localhost:6379"
-
     # Feature flags
     use_vector_db: str = "false"
 
@@ -35,8 +32,6 @@ class Settings(BaseSettings):
 
     # Semantic caching
     cache_similarity_threshold: float = 0.95
-    cache_ttl_seconds: int = 86400
-    semantic_cache_enabled: bool = False
 
     # Kubernetes — set one of:
     #   KUBECONFIG_B64   base64-encoded kubeconfig (docker-friendly, no volume mount needed)

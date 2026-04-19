@@ -247,12 +247,6 @@ class TestConfigNewFields:
         s = Settings()
         assert hasattr(s, "postgres_dsn")
 
-    def test_config_has_redis_url(self):
-        from app.config import Settings
-        s = Settings()
-        assert hasattr(s, "redis_url")
-        assert s.redis_url == "redis://localhost:6379"
-
     def test_config_has_use_vector_db(self):
         from app.config import Settings
         s = Settings()
