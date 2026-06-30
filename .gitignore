@@ -26,3 +26,4 @@ OPENAI.md
 .mcp.json
 .pytest_cache/
 Pulumi.dev.yaml
+Pulumi.prod.yaml
