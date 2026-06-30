@@ -41,7 +41,6 @@ async def action_node(state: SREState) -> dict:
         or state["alert_payload"].get("alertname", "unknown")
     )
 
-    # Determine which tool to call
     tool_name = _determine_action_tool(proposed_action, sop_matches)
 
     if tool_name not in TOOL_REGISTRY:
@@ -88,7 +87,6 @@ async def action_node(state: SREState) -> dict:
 
 
 def _determine_action_tool(proposed_action: str, sop_matches: list[dict]) -> str:
-    """Determine which tool to call based on proposed_action text and SOPs."""
     text_lower = proposed_action.lower()
 
     # OOM / memory-related → scale memory limits then restart

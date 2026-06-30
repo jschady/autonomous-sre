@@ -32,11 +32,9 @@ async def research_node(state: SREState) -> dict:
     error_summary = state.get("error_summary", "")
     triage_summary = state.get("triage_summary", "")
 
-    # Build search query from error context
     alertname = payload.get("alertname", "")
     search_query = f"{alertname} {error_summary} {triage_summary}".strip()
 
-    # Search SOPs
     sop_matches = _search_knowledge_base(search_query)
 
     if sop_matches:
@@ -47,7 +45,6 @@ async def research_node(state: SREState) -> dict:
     else:
         sop_context = "No matching SOPs found."
 
-    # Fetch few-shot examples from resolved incidents
     few_shot_section = ""
     prompt_config = load_prompt("researcher", settings.prompt_dir)
     if prompt_config.few_shot_enabled:

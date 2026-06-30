@@ -151,7 +151,6 @@ async def _persist_resolution(state: dict) -> None:
 
 
 def _is_healthy(metrics_str: str) -> bool:
-    """Parse metrics string and determine if system is healthy."""
     match = re.search(r"error_rate=([\d.]+)", metrics_str)
     if match:
         error_rate = float(match.group(1))

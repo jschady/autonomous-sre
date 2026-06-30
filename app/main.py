@@ -17,6 +17,9 @@ Lifespan:
 """
 from __future__ import annotations
 
+import asyncio
+import collections
+import hmac
 import json
 import logging
 import re
@@ -55,19 +58,11 @@ _INITIAL_STATES: dict[str, SREState] = {}
 # Maps workload_key (namespace/workload_name) → alert_id currently remediating
 # that workload.  Prevents concurrent graph runs from mutating the same K8s
 # resource simultaneously.
-#
-# _ALERT_TO_WORKLOAD is the reverse map (alert_id → workload_key) used by
-# _resume_and_notify to release the lock once the graph finishes via Slack
-# approval.  It is populated at webhook ingestion alongside _ACTIVE_WORKLOADS.
 # ---------------------------------------------------------------------------
 
 _ACTIVE_WORKLOADS: dict[str, str] = {}
 _ALERT_TO_WORKLOAD: dict[str, str] = {}
 
-# Post-resolution cooldown: maps workload_key → monotonic timestamp when
-# cooldown expires.  Prevents Alertmanager repeat_interval from re-triggering
-# a graph run in the window between graph completion and Prometheus /
-# Alertmanager ceasing to fire.
 _WORKLOAD_COOLDOWNS: dict[str, float] = {}
 _COOLDOWN_SECONDS = 300  # 5 minutes
 
@@ -119,26 +114,49 @@ def _set_cooldown(wk: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Webhook rate limiter — sliding window, configurable via WEBHOOK_RATE_LIMIT_PER_MINUTE
+# ---------------------------------------------------------------------------
+
+class _WebhookRateLimiter:
+    def __init__(self, max_per_minute: int) -> None:
+        self._max = max_per_minute
+        self._timestamps: collections.deque[float] = collections.deque()
+        self._lock = asyncio.Lock()
+
+    async def check(self) -> bool:
+        """Return True if the request is within the rate limit, False if it should be rejected."""
+        if self._max <= 0:
+            return True
+        async with self._lock:
+            now = time.monotonic()
+            cutoff = now - 60.0
+            while self._timestamps and self._timestamps[0] < cutoff:
+                self._timestamps.popleft()
+            if len(self._timestamps) >= self._max:
+                return False
+            self._timestamps.append(now)
+            return True
+
+
+_rate_limiter: _WebhookRateLimiter | None = None
+
+_SLACK_RESPONSE_URL_PREFIX = "https://hooks.slack.com/"
+
+
+# ---------------------------------------------------------------------------
 # Lifespan: initialise checkpointer + graph
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _rate_limiter
     settings = _get_settings()
+    _rate_limiter = _WebhookRateLimiter(settings.webhook_rate_limit_per_minute)
     if settings.postgres_dsn:
         try:
             from psycopg.rows import dict_row
             from psycopg_pool import AsyncConnectionPool
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-            # prepare_threshold=None disables psycopg3 prepared statements entirely.
-            # NOTE: prepare_threshold=0 means "prepare on first use" (NOT disabled) —
-            # that causes "__pg3_N does not exist" errors with PgBouncer transaction
-            # mode (Supabase port 6543) because prepared statements are connection-scoped
-            # and PgBouncer can route each transaction to a different backend connection.
-            # AsyncConnectionPool instead of a single AsyncConnection: reconnects
-            # automatically when the backend closes idle connections (Supabase/PgBouncer
-            # idle timeout, network blip) so that every aget_state/ainvoke call gets a
-            # live connection rather than hanging until the proxy times out.
             async with AsyncConnectionPool(
                 conninfo=settings.postgres_dsn,
                 kwargs={
@@ -232,6 +250,7 @@ async def _run_graph(alert_id: str, initial_state: SREState, workload_key: str =
 async def receive_webhook(
     alert: AlertWebhook,
     background_tasks: BackgroundTasks,
+    request: Request,
 ) -> dict[str, Any]:
     """Accept a Prometheus/Alertmanager webhook and start remediation graph.
 
@@ -242,6 +261,20 @@ async def receive_webhook(
     - Legacy flat format (tests / direct callers): single run, returns
       ``alert_id``.
     """
+    settings = _get_settings()
+
+    # Bearer token authentication (when WEBHOOK_AUTH_TOKEN is configured)
+    if settings.webhook_auth_token:
+        auth_header = request.headers.get("Authorization", "")
+        provided = auth_header.removeprefix("Bearer ").strip()
+        if not hmac.compare_digest(provided, settings.webhook_auth_token):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Sliding-window rate limit
+    limiter = _rate_limiter or _WebhookRateLimiter(settings.webhook_rate_limit_per_minute)
+    if not await limiter.check():
+        raise HTTPException(status_code=429, detail="Too many requests")
+
     if alert.alerts:
         # Alertmanager v4 envelope — process each alert individually.
         # Duplicate workloads are silently suppressed (200) rather than rejected (409),
@@ -434,8 +467,8 @@ async def slack_interactive(request: Request, background_tasks: BackgroundTasks)
 
         try:
             interaction = SlackInteractionPayload.model_validate(slack_data)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+        except Exception:
+            raise HTTPException(status_code=422, detail="Invalid Slack interactive payload")
 
         action = interaction.actions[0] if interaction.actions else None
         if not action:
@@ -457,8 +490,8 @@ async def slack_interactive(request: Request, background_tasks: BackgroundTasks)
         try:
             body = await request.json()
             interaction_legacy = SlackInteraction.model_validate(body)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+        except Exception:
+            raise HTTPException(status_code=422, detail="Invalid interaction payload")
 
         alert_id = interaction_legacy.alert_id
         approved = interaction_legacy.approved
@@ -506,7 +539,7 @@ async def _resume_and_notify(alert_id: str, approved: bool, response_url: str | 
     working_msg = build_working_message(alert_id, approved)
     if ts and channel:
         await update_slack_message(ts=ts, channel=channel, blocks=working_msg)
-    elif response_url:
+    elif response_url and response_url.startswith(_SLACK_RESPONSE_URL_PREFIX):
         try:
             import httpx
             async with httpx.AsyncClient(timeout=10) as client:
@@ -655,9 +688,6 @@ async def _resume_graph(alert_id: str, approved: bool) -> dict:
     except Exception as exc:
         logger.error("Graph resume failed for alert %s: %s", alert_id, exc)
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-_SLACK_RESPONSE_URL_PREFIX = "https://hooks.slack.com/"
 
 
 async def _post_slack_rejection(

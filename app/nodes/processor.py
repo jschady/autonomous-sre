@@ -48,11 +48,8 @@ async def processor_node(state: SREState) -> dict:
     container_hint = metadata.get("container", service)
     # Derive the actual workload name (deployment/statefulset) from the pod name.
     # For Deployment pods: chaos-app-7c949f9b88-txqcz → chaos-app
-    # For StatefulSet/bare pods the name is returned as-is.
-    # Used for restart/rollback and list_pods fallback — avoids using the scrape-target service name.
     workload = _derive_workload_name(pod)
 
-    # Execute each requested tool
     for tool_name in tools_to_run:
         tool = TOOL_REGISTRY.get(tool_name)
         if tool is None:
@@ -188,7 +185,6 @@ def _extract_memory_limit_tag(raw_parts: list[str]) -> str | None:
 def _invoke_tool(
     tool_name: str, tool, namespace: str, service: str, pod: str, container_hint: str, workload: str
 ) -> str:
-    """Invoke a tool with appropriate arguments based on its name."""
     # Always qualify pod with namespace so _parse_pod_ref doesn't default to "default"
     qualified_pod = f"{namespace}/{pod}" if "/" not in pod else pod
     if tool_name == "get_cluster_events":

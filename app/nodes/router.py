@@ -48,7 +48,6 @@ async def router_node(state: SREState) -> dict:
 
 
 async def _check_cache(settings, error_summary: str) -> dict | None:
-    """Check pgvector cache and return cached entry if found."""
     try:
         from app.utils.incident_store import cache_lookup
 

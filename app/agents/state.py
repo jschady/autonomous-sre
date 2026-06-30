@@ -47,7 +47,7 @@ class SREState(TypedDict):
 
     # --- Routing & Caching ---
     cache_hit: bool        # True if semantic cache matched
-    cache_key: str         # Redis key of the cache hit
+    cache_key: str         # error_summary of the matched resolved incident
 
     # --- LLMOps: Token & Cost Tracking ---
     token_usage: list[dict]      # List of NodeUsage dicts, one per LLM call

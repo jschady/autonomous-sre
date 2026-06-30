@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 async def escalate_node(state: SREState) -> dict:
-    """Terminal escalation node — marks alert as escalated and ends graph."""
     return {
         "status": "escalated",
         "resolved": False,
@@ -113,7 +112,6 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStat
 
     workflow = StateGraph(SREState)
 
-    # Register nodes
     workflow.add_node("triage", triage_node)
     workflow.add_node("router", router_node)
     workflow.add_node("processor", processor_node)
@@ -124,7 +122,6 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> CompiledStat
     workflow.add_node("verification", verification_node)
     workflow.add_node("escalate", escalate_node)
 
-    # Entry point
     workflow.set_entry_point("triage")
 
     # triage → router (or END on failure)

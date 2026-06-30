@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     # VPS / firewall
     prometheus_server_ip: str = ""
 
+    # Optional bearer token for protecting the /webhook endpoint.
+    # When set, the Authorization header must be "Bearer <token>".
+    # Leave empty to skip authentication (suitable for internal-only deployments
+    # where network-level controls (VPN/Tailscale) already enforce access).
+    webhook_auth_token: str = ""
+
+    # Rate limiting for /webhook (alerts per minute, 0 = disabled)
+    webhook_rate_limit_per_minute: int = 60
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

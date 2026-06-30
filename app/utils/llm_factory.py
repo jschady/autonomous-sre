@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 def get_llm_client(model_override: str | None = None) -> BaseChatModel:
-    """Return a ChatAnthropic client."""
     return _build_claude_client(get_settings(), model_override)
 
 

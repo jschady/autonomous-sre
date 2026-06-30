@@ -98,8 +98,5 @@ def _parse_triage_response(content: str) -> dict:
 
 
 def _validate_tools(tool_names: list) -> list[str]:
-    """Filter tool names to only include registered tools."""
     return [name for name in tool_names if name in TOOL_REGISTRY]
-
-
 

@@ -47,7 +47,7 @@ Autonomous SRE receives Prometheus alertmanager webhooks and runs them through a
 ## Features
 
 - **LangGraph stateful workflow** — durable, resumable execution via PostgreSQL checkpointing
-- **Semantic caching** — Redis + pgvector cache; repeat/similar alerts skip full analysis
+- **Semantic caching** — pgvector-backed similarity cache; repeat/similar alerts skip full analysis
 - **Human-in-the-loop** — Slack Block Kit approval messages before any k8s action
 - **RBAC-aware** — detects and escalates on Kubernetes permission denials
 - **SOP library** — structured runbooks for: CrashLoopBackOff, OOMKilled, ImagePullBackOff, HighLatency, DiskPressure, CertificateExpired, HighErrorRate, ConnectionRefused
@@ -75,8 +75,7 @@ app/
 │   ├── k8s_tools.py      # Tool registry
 │   └── db_tools.py       # pgvector knowledge base queries
 ├── utils/
-│   ├── semantic_cache.py # Redis-backed similarity cache
-│   ├── incident_store.py # Resolved incident persistence
+│   ├── incident_store.py # Resolved incident persistence + pgvector cache lookup
 │   ├── llm_factory.py    # Anthropic client factory (model selection)
 │   ├── llm_cost.py       # Token cost calculation
 │   ├── slack_blocks.py   # Block Kit message builders
@@ -151,7 +150,7 @@ Golden dataset scenarios are in `tests/golden_dataset/`:
 
 ## Deployment
 
-Infrastructure is managed with Pulumi (VPS target). See `infra/vps/` and `docs/phase4-deployment.md`.
+Infrastructure is managed with Pulumi (VPS target). See `infra/vps/` for deployment details.
 
 ```bash
 cd infra/vps
@@ -180,6 +179,6 @@ All agent state is typed via `SREState` (`app/agents/state.py`). Key fields:
 ## Architecture Notes
 
 - **Checkpointing**: Uses `AsyncPostgresSaver` in production, `MemorySaver` as fallback. The FastAPI lifespan initialises the checkpointer before `build_graph()` is called — the graph itself is stateless at build time.
-- **Semantic cache**: On cache hit, the router short-circuits to `notify_slack`, skipping `processor` and `researcher`. Cache TTL and similarity threshold are configurable.
+- **Semantic cache**: On cache hit, the router short-circuits to `notify_slack`, skipping `processor` and `researcher`. Similarity threshold is configurable via `CACHE_SIMILARITY_THRESHOLD`.
 - **Immutable state**: All node functions return new dicts rather than mutating `SREState` in place.
 - **Prompt templates**: Loaded from `prompts/*.yaml` at startup via `prompt_loader.py`, avoiding hardcoded strings in node logic.

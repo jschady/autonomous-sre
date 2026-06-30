@@ -1,1 +1,0 @@
-2026-04-17: semantic cache always missed — router read `error_summary` (written by processor, which runs after router) so it was always `""` at lookup time; fix: router + `_persist_resolution` now both use `triage_summary` (set pre-processor) so lookup and store embeddings use the same text type.
