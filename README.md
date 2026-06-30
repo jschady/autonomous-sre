@@ -14,7 +14,7 @@ Autonomous SRE receives Prometheus alertmanager webhooks and runs them through a
 
 ```
                     ┌─────────┐
- webhook ──────────▶│  triage  │
+ webhook ──────────▶│  triage │
                     └────┬────┘
              escalate/   │   ok
              fail ───────┤
