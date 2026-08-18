@@ -13,12 +13,12 @@ from kubernetes.client.exceptions import ApiException
 
 from app.tools.k8s_client import k8s_available
 from app.tools.k8s_helpers import (
-    MOCK_HEALTHY,
     K8S_DISABLED_MSG,
     GetClusterEventsInput,
     FetchContainerLogsInput,
     GetSystemMetricsInput,
     get_core_v1,
+    is_mock_healthy,
     is_rbac_error,
     parse_pod_ref,
     rbac_message,
@@ -272,7 +272,7 @@ def get_system_metrics(service_name: str, namespace: str = "default") -> str:
     """Retrieve current system metrics for the specified service.
 
     Queries Prometheus when PROMETHEUS_URL is configured; falls back to
-    mock data (controlled by MOCK_HEALTHY) for local dev and tests.
+    mock data (controlled by set_mock_healthy) for local dev and tests.
 
     Returns a structured string with error_rate, latency_p99, cpu_usage, memory_usage.
     """
@@ -349,7 +349,7 @@ def _query_prometheus(service_name: str, namespace: str, prometheus_url: str) ->
 
 def _mock_metrics(service_name: str) -> str:
     """Return hardcoded mock metrics for local dev and tests."""
-    if MOCK_HEALTHY:
+    if is_mock_healthy():
         return (
             f"service={service_name} "
             "error_rate=0.2% "

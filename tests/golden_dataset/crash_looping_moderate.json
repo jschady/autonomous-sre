@@ -1,8 +1,7 @@
 {
   "id": "golden-002",
-  "description": "Pod crash looping — moderate complexity, route to local model",
+  "description": "Pod crash looping — moderate complexity, restart and verify metrics",
   "expected_complexity": "moderate",
-  "expected_provider": "local",
   "input": {
     "alertname": "PodCrashLooping",
     "status": "firing",
@@ -26,5 +25,8 @@
     "restart service",
     "check logs",
     "investigate startup"
-  ]
+  ],
+  "auto_approve": true,
+  "mock_healthy_after_action": true,
+  "expected_status": "resolved"
 }

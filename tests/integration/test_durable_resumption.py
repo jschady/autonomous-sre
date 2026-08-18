@@ -20,7 +20,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage
 
-import app.tools.k8s_tools as k8s_tools
+from app.tools.k8s_tools import set_mock_healthy
 
 POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "")
 pytestmark = pytest.mark.integration
@@ -31,7 +31,7 @@ class TestDurableResumption:
     @pytest.mark.asyncio
     async def test_approval_resumes_after_graph_pause(self):
         """Graph paused at human_gate resumes correctly after approval via API."""
-        k8s_tools.MOCK_HEALTHY = True
+        set_mock_healthy(True)
 
         triage_response = (
             '{"severity": "critical", "tools_to_run": ["get_cluster_events"], '

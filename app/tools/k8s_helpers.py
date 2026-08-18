@@ -16,11 +16,27 @@ from app.tools.k8s_client import get_apps_v1_api, get_core_v1_api, k8s_available
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level state — kept for backward-compat with existing tests/conftest
+# Module-level state
+#
+# _MOCK_HEALTHY is private and read via is_mock_healthy() so that this module
+# stays the single source of truth. Re-exporting the bool itself let callers
+# rebind a copy in another module, which the metrics path never saw.
 # ---------------------------------------------------------------------------
 
-MOCK_HEALTHY: bool = False
+_MOCK_HEALTHY: bool = False
 EXECUTED_ACTIONS: list[str] = []
+
+
+def set_mock_healthy(value: bool) -> None:
+    """Set the mock-metrics health flag (tests and the eval harness)."""
+    global _MOCK_HEALTHY
+    _MOCK_HEALTHY = value
+
+
+def is_mock_healthy() -> bool:
+    """Return the current mock-metrics health flag."""
+    return _MOCK_HEALTHY
+
 
 # ---------------------------------------------------------------------------
 # RBAC error sentinel

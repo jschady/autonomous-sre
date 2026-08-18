@@ -3,7 +3,6 @@
 TDD: Written BEFORE implementation.
 """
 import pytest
-import app.tools.k8s_tools as k8s_tools
 from app.tools.k8s_tools import (
     get_cluster_events,
     fetch_container_logs,
@@ -11,7 +10,7 @@ from app.tools.k8s_tools import (
     restart_service,
     execute_rollback,
     EXECUTED_ACTIONS,
-    MOCK_HEALTHY,
+    set_mock_healthy,
 )
 from app.tools.db_tools import query_knowledge_base
 from app.tools import ALL_TOOLS, TOOL_REGISTRY
@@ -78,7 +77,7 @@ class TestFetchContainerLogs:
 
 class TestGetSystemMetrics:
     def test_get_system_metrics_unhealthy(self):
-        k8s_tools.MOCK_HEALTHY = False
+        set_mock_healthy(False)
         result = get_system_metrics.invoke({"service_name": "checkout-api"})
         assert isinstance(result, str)
         # Result should indicate unhealthy state — error_rate > 5
@@ -86,17 +85,24 @@ class TestGetSystemMetrics:
         # Parse error_rate from result — it should be > 5
         import re
         match = re.search(r"error_rate['\"]?\s*[:=]\s*([\d.]+)", result)
-        if match:
-            assert float(match.group(1)) > 5
+        assert match is not None
+        assert float(match.group(1)) > 5
 
     def test_get_system_metrics_healthy(self):
-        k8s_tools.MOCK_HEALTHY = True
+        set_mock_healthy(True)
         result = get_system_metrics.invoke({"service_name": "checkout-api"})
         assert isinstance(result, str)
         import re
         match = re.search(r"error_rate['\"]?\s*[:=]\s*([\d.]+)", result)
-        if match:
-            assert float(match.group(1)) < 1
+        assert match is not None
+        assert float(match.group(1)) < 1
+
+    def test_set_mock_healthy_is_visible_to_metrics_path(self):
+        """The flag setter must reach _mock_metrics, not just a stale re-export."""
+        set_mock_healthy(True)
+        assert "status=healthy" in get_system_metrics.invoke({"service_name": "checkout-api"})
+        set_mock_healthy(False)
+        assert "status=degraded" in get_system_metrics.invoke({"service_name": "checkout-api"})
 
     def test_get_system_metrics_includes_service_name(self):
         result = get_system_metrics.invoke({"service_name": "payment-api"})

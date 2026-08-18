@@ -1,8 +1,7 @@
 {
   "id": "golden-003",
-  "description": "Multi-service cascading failure — complex, route to Claude",
+  "description": "Multi-service cascading failure — complex, human rejects the proposed action",
   "expected_complexity": "complex",
-  "expected_provider": "claude",
   "input": {
     "alertname": "CascadingServiceFailure",
     "status": "firing",
@@ -27,5 +26,8 @@
     "circuit breaker",
     "database",
     "on-call engineer"
-  ]
+  ],
+  "auto_approve": false,
+  "mock_healthy_after_action": false,
+  "expected_status": "escalated"
 }

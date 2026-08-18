@@ -1,8 +1,7 @@
 {
   "id": "golden-001",
-  "description": "Simple OOMKilled alert — should route to local model",
+  "description": "Simple OOMKilled alert — scale memory, then verify pod stability via the K8s API",
   "expected_complexity": "simple",
-  "expected_provider": "local",
   "input": {
     "alertname": "OOMKilled",
     "status": "firing",
@@ -26,5 +25,9 @@
     "memory limit",
     "kubectl set resources",
     "resource limit"
-  ]
+  ],
+  "auto_approve": true,
+  "mock_healthy_after_action": false,
+  "expected_status": "escalated",
+  "expected_status_note": "OOM verification reads real pod stability from the K8s API, not the mock metrics flag. With no live checkout-api pods, the agent must escalate rather than claim resolution."
 }

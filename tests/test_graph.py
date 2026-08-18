@@ -1,7 +1,7 @@
 """Tests for the LangGraph agent graph.
 
 TDD: Written BEFORE implementation.
-Graph tests mock LLM calls and use MOCK_HEALTHY to control verification outcomes.
+Graph tests mock LLM calls and use set_mock_healthy to control verification outcomes.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from langchain_core.messages import AIMessage
 
-import app.tools.k8s_tools as k8s_tools
+from app.tools.k8s_tools import set_mock_healthy
 
 from app.agents.state import create_initial_state
 from app.agents.graph import build_graph
@@ -51,11 +51,14 @@ def unknown_payload():
 
 
 def _make_mock_llm(responses: list[str]) -> MagicMock:
-    """Mock ChatAnthropic that returns responses in sequence."""
+    """Mock ChatAnthropic that returns responses in sequence.
+
+    Nodes await llm.ainvoke(), so the async path needs its own side effects.
+    """
     mock_llm = MagicMock()
     mock_llm.bind_tools.return_value = mock_llm
-    side_effects = [AIMessage(content=r) for r in responses]
-    mock_llm.invoke.side_effect = side_effects
+    mock_llm.invoke.side_effect = [AIMessage(content=r) for r in responses]
+    mock_llm.ainvoke = AsyncMock(side_effect=[AIMessage(content=r) for r in responses])
     return mock_llm
 
 
@@ -88,8 +91,8 @@ class TestGraphBuilds:
 class TestHappyPath:
     @pytest.mark.asyncio
     async def test_happy_path_resolves(self, crashloop_payload):
-        """Full graph run with mocked LLM + MOCK_HEALTHY=True + auto-approve → resolved."""
-        k8s_tools.MOCK_HEALTHY = True
+        """Full graph run with mocked LLM + mock health True + auto-approve → resolved."""
+        set_mock_healthy(True)
 
         triage_response = (
             '{"severity": "critical", "tools_to_run": ["get_cluster_events"], '
@@ -149,7 +152,7 @@ class TestMaxRetriesEscalation:
     @pytest.mark.asyncio
     async def test_max_retries_escalates(self, crashloop_payload):
         """When verification always fails, graph should escalate after max_retries."""
-        k8s_tools.MOCK_HEALTHY = False
+        set_mock_healthy(False)
 
         triage_response = (
             '{"severity": "critical", "tools_to_run": ["get_cluster_events"], '

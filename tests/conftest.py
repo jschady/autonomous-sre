@@ -14,8 +14,10 @@ os.environ.setdefault("LANGSMITH_TRACING", "false")
 # Skip the post-action verification delay in tests (default is 30s)
 os.environ.setdefault("VERIFICATION_DELAY_SECONDS", "0")
 
-import app.tools.k8s_tools as k8s_tools
-from app.tools.k8s_tools import EXECUTED_ACTIONS
+# Force the mock metrics path — unit tests must never query a real Prometheus
+os.environ.setdefault("PROMETHEUS_ENABLED", "false")
+
+from app.tools.k8s_tools import EXECUTED_ACTIONS, set_mock_healthy
 
 SAMPLE_ALERT = {
     "alertname": "PodCrashLooping",
@@ -39,7 +41,7 @@ SAMPLE_ALERT = {
 def reset_mock_state():
     """Reset module-level mock state before each test."""
     EXECUTED_ACTIONS.clear()
-    k8s_tools.MOCK_HEALTHY = False
+    set_mock_healthy(False)
     yield
 
 

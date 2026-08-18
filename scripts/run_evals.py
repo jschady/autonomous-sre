@@ -1,6 +1,7 @@
 """Eval runner for the Autonomous SRE graph.
 
-Runs 3 predefined scenarios against the real graph with real LLM calls.
+Runs the golden dataset (tests/golden_dataset/*.json) plus a couple of
+supplemental scenarios against the real graph with real LLM calls.
 Prints PASS/FAIL for each scenario based on final state.status.
 
 Usage:
@@ -12,6 +13,8 @@ Requires:
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,9 +24,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
-import app.tools.k8s_tools as k8s_tools
+# Skip the post-action verification delay (default is 30s per verification).
+# Must be set before app.nodes.verification is imported.
+os.environ.setdefault("VERIFICATION_DELAY_SECONDS", "0")
+
 from app.agents.graph import build_graph
 from app.agents.state import create_initial_state
+from app.tools.k8s_tools import set_mock_healthy
 from langgraph.types import Command
 
 
@@ -31,30 +38,27 @@ from langgraph.types import Command
 # Eval scenarios
 # ---------------------------------------------------------------------------
 
-SCENARIOS = [
-    {
-        "name": "CrashLoopBackOff in prod",
-        "description": "Pod crash looping — should trigger restart and resolve",
-        "payload": {
-            "alertname": "PodCrashLooping",
-            "status": "firing",
-            "labels": {
-                "region": "us-east-1",
-                "env": "prod",
-                "cluster_id": "k8s-prod-1",
-                "namespace": "checkout",
-                "service": "checkout-api",
-                "pod": "crash-api-abc123",
-            },
-            "annotations": {
-                "summary": "Pod is crash looping — restarted 8 times",
-                "description": "CrashLoopBackOff: container failed to start",
-            },
-        },
-        "mock_healthy_after_action": True,
-        "auto_approve": True,
-        "expected_status": "resolved",
-    },
+GOLDEN_DATASET_DIR = PROJECT_ROOT / "tests" / "golden_dataset"
+
+
+def load_golden_scenarios() -> list[dict]:
+    """Load eval scenarios from the golden dataset JSON files."""
+    scenarios = []
+    for path in sorted(GOLDEN_DATASET_DIR.glob("*.json")):
+        data = json.loads(path.read_text())
+        scenarios.append({
+            "name": f"{data['id']} — {data['input']['alertname']} ({path.name})",
+            "description": data["description"],
+            "payload": data["input"],
+            "mock_healthy_after_action": data["mock_healthy_after_action"],
+            "auto_approve": data["auto_approve"],
+            "expected_status": data["expected_status"],
+        })
+    return scenarios
+
+
+# Scenarios not represented in the golden dataset.
+EXTRA_SCENARIOS = [
     {
         "name": "HighErrorRate — rollback scenario",
         "description": "High error rate after deploy — should trigger rollback",
@@ -99,6 +103,11 @@ SCENARIOS = [
 # Runner
 # ---------------------------------------------------------------------------
 
+# A failed verification loops back to triage and interrupts at human_gate again,
+# so resume repeatedly; the cap guards against an unterminated retry loop.
+_MAX_RESUMES = 6
+
+
 async def run_scenario(graph, scenario: dict) -> tuple[str, str]:
     """Run a single eval scenario. Returns (scenario_name, 'PASS'|'FAIL')."""
     name = scenario["name"]
@@ -107,7 +116,7 @@ async def run_scenario(graph, scenario: dict) -> tuple[str, str]:
     mock_healthy = scenario["mock_healthy_after_action"]
     expected = scenario["expected_status"]
 
-    k8s_tools.MOCK_HEALTHY = False  # Start unhealthy
+    set_mock_healthy(False)  # Start unhealthy
     initial_state = create_initial_state(payload)
     alert_id = initial_state["alert_id"]
     config = {"configurable": {"thread_id": alert_id}}
@@ -118,20 +127,16 @@ async def run_scenario(graph, scenario: dict) -> tuple[str, str]:
 
         # In LangGraph >=1.x ainvoke returns state with __interrupt__ key
         # rather than raising GraphInterrupt.
-        if "__interrupt__" in final_state:
+        resumes = 0
+        while "__interrupt__" in final_state and resumes < _MAX_RESUMES:
             if auto_approve:
-                # Set healthy before action
-                k8s_tools.MOCK_HEALTHY = mock_healthy
-                final_state = await graph.ainvoke(
-                    Command(resume={"approved": True}),
-                    config=config,
-                )
-            else:
-                # Reject — should escalate
-                final_state = await graph.ainvoke(
-                    Command(resume={"approved": False}),
-                    config=config,
-                )
+                # Set healthy before the action runs
+                set_mock_healthy(mock_healthy)
+            final_state = await graph.ainvoke(
+                Command(resume={"approved": auto_approve}),
+                config=config,
+            )
+            resumes += 1
 
         actual_status = final_state.get("status", "unknown")
         result = "PASS" if actual_status == expected else "FAIL"
@@ -147,9 +152,10 @@ async def main() -> None:
     print("=" * 60)
 
     graph = build_graph()
+    scenarios = load_golden_scenarios() + EXTRA_SCENARIOS
     results = []
 
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         print(f"\nRunning: {scenario['name']}")
         print(f"  {scenario['description']}")
         name, verdict, actual = await run_scenario(graph, scenario)

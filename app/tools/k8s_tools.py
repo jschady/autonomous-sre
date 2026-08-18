@@ -6,13 +6,14 @@ This module re-exports the public API so existing imports continue to work.
 # Helpers & shared state (used by tests/conftest)
 from app.tools.k8s_helpers import (  # noqa: F401
     EXECUTED_ACTIONS,
-    MOCK_HEALTHY,
     ExecuteRollbackInput,
     FetchContainerLogsInput,
     GetClusterEventsInput,
     GetSystemMetricsInput,
     RestartServiceInput,
     ScaleMemoryInput,
+    is_mock_healthy,
+    set_mock_healthy,
 )
 
 # Read-only tools

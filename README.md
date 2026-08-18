@@ -137,16 +137,30 @@ pytest tests/integration/ -v
 
 ## Evaluation
 
-Run the golden dataset eval harness against curated alert scenarios:
+Run the eval harness against the golden dataset. It drives the real graph with real
+LLM calls (so `ANTHROPIC_API_KEY` is required), auto-approves or rejects at the human
+gate per scenario, and asserts the final `state.status`:
 
 ```bash
 python scripts/run_evals.py
 ```
 
-Golden dataset scenarios are in `tests/golden_dataset/`:
-- `oom_killed_simple.json`
-- `crash_looping_moderate.json`
-- `cascading_failure_complex.json`
+Scenarios are loaded from `tests/golden_dataset/*.json` — each file carries the alert
+payload plus its harness settings (`auto_approve`, `mock_healthy_after_action`,
+`expected_status`):
+
+| File | Alertname | Expected status |
+|---|---|---|
+| `oom_killed_simple.json` | `OOMKilled` | `escalated` — OOM verification reads real pod stability from the K8s API, so with no live pods the agent must escalate rather than claim resolution |
+| `crash_looping_moderate.json` | `PodCrashLooping` | `resolved` — restart, then healthy mock metrics |
+| `cascading_failure_complex.json` | `CascadingServiceFailure` | `escalated` — human rejects the proposed action |
+
+Two supplemental scenarios not in the dataset are defined in `scripts/run_evals.py`
+itself: `HighErrorRate` (rollback → `resolved`) and `QuantumFluxAnomaly` (unrecognised
+alert → `escalated`).
+
+Mock metrics health is controlled by `set_mock_healthy()` in `app/tools/k8s_helpers.py`;
+the harness sets `VERIFICATION_DELAY_SECONDS=0` so runs don't sleep between verifications.
 
 ## Deployment
 
